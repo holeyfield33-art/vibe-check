@@ -106,7 +106,7 @@ def check_syntax(files):
 def check_duplicates(files):
     """Hash sliding windows of normalized lines; report blocks appearing across 2+
     distinct files. Test files are skipped (repeated fixtures are idiomatic, not drift)."""
-    seen = defaultdict(list)  # block_hash -> [(rel_p, start_line, token_count)]
+    seen = defaultdict(list)  # block_hash -> [(rel_p, start_line, end_line, token_count)]
     for abs_p, rel_p in files:
         if os.path.splitext(rel_p)[1] not in CODE_EXT:
             continue
@@ -128,19 +128,91 @@ def check_duplicates(files):
             if tokens < DUP_MIN_TOKENS:
                 continue
             h = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
-            seen[h].append((rel_p, window[0][0], tokens))
+            seen[h].append((rel_p, window[0][0], window[-1][0], tokens))
     dups = []
     for h, hits in seen.items():
         # only a real duplicate if it spans 2+ DISTINCT files
-        distinct_files = {f for f, _, _ in hits}
+        distinct_files = {f for f, _, _, _ in hits}
         if len(distinct_files) >= 2:
             dups.append({
                 "fingerprint": h,
-                "tokens": hits[0][2],
-                "occurrences": [{"file": f, "line": ln} for f, ln, _ in hits],
+                "tokens": hits[0][3],
+                "occurrences": [{"file": f, "line": ln, "end_line": el}
+                                for f, ln, el, _ in hits],
             })
     dups.sort(key=lambda d: (-len(d["occurrences"]), -d["tokens"]))
     return dups
+
+
+def _merge_duplicate_blocks(dups):
+    """Report-assembly merge: collapse overlapping/adjacent sliding-window hits into
+    one finding per contiguous block per occurrence file-set. The fingerprint-based
+    detection above is untouched; this only stitches windows back together so a single
+    duplicated region reads as one finding instead of N near-identical rows.
+
+    Two window-hits merge when their line ranges overlap or are adjacent in *every*
+    file of the shared file-set. Non-contiguous blocks stay distinct."""
+    groups = defaultdict(list)
+    for d in dups:
+        fileset = frozenset(o["file"] for o in d["occurrences"])
+        groups[fileset].append(d)
+
+    merged = []
+    for fileset, items in groups.items():
+        nodes = []
+        for d in items:
+            ranges = {}  # file -> [start, end]
+            for o in d["occurrences"]:
+                s, e = o["line"], o.get("end_line", o["line"])
+                if o["file"] in ranges:
+                    ps, pe = ranges[o["file"]]
+                    ranges[o["file"]] = [min(ps, s), max(pe, e)]
+                else:
+                    ranges[o["file"]] = [s, e]
+            nodes.append({"ranges": ranges, "tokens": d["tokens"],
+                          "fingerprints": [d["fingerprint"]]})
+
+        def mergeable(a, b):
+            for f in fileset:
+                as_, ae = a["ranges"][f]
+                bs, be = b["ranges"][f]
+                if not (as_ <= be + 1 and bs <= ae + 1):
+                    return False
+            return True
+
+        changed = True
+        while changed:
+            changed = False
+            out = []
+            for node in nodes:
+                placed = False
+                for ex in out:
+                    if mergeable(ex, node):
+                        for f in fileset:
+                            ns, ne = node["ranges"][f]
+                            es, ee = ex["ranges"][f]
+                            ex["ranges"][f] = [min(es, ns), max(ee, ne)]
+                        ex["tokens"] = max(ex["tokens"], node["tokens"])
+                        ex["fingerprints"].extend(node["fingerprints"])
+                        placed = True
+                        changed = True
+                        break
+                if not placed:
+                    out.append(node)
+            nodes = out
+
+        for node in nodes:
+            occ = [{"file": f, "line": node["ranges"][f][0],
+                    "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
+                   for f in sorted(node["ranges"])]
+            merged.append({
+                "fingerprint": node["fingerprints"][0],
+                "fingerprints": sorted(set(node["fingerprints"])),
+                "tokens": node["tokens"],
+                "occurrences": occ,
+            })
+    merged.sort(key=lambda d: (-len(d["occurrences"]), -d["tokens"]))
+    return merged
 
 
 def _parse_python_deps(root):
@@ -369,6 +441,26 @@ def check_dead_code(files):
             elif isinstance(node, ast.Attribute):
                 referenced.add(node.attr)
 
+        # __all__ exports count as references (AST, not regex): a name in __all__ is
+        # a public export with no in-repo call site, so it must not read as dead.
+        # Precedence: a module that defines __all__ is honored as-is. Only a module
+        # WITHOUT __all__ falls back to plain dead-code rules for its top-level defs
+        # (we never blanket-exempt __init__.py defs - that would hide real dead code).
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            elif isinstance(stmt, ast.AugAssign):
+                targets = [stmt.target]
+            else:
+                continue
+            if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                continue
+            val = stmt.value
+            if isinstance(val, (ast.List, ast.Tuple)):
+                for elt in val.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        referenced.add(elt.value)
+
         # definitions + stub detection
         # track only MODULE-LEVEL defs for the unreferenced check (methods are
         # called via self/cls and are too false-positive-prone to flag).
@@ -444,29 +536,57 @@ def check_dead_code(files):
 # --- main -------------------------------------------------------------------
 
 def run(root, only=None):
-    files = list(_iter_files(root, only=only))
+    # Horos fallback: --files is optional refinement, never a precondition. When the
+    # slice is absent, empty, or resolves to nothing on disk, scan the whole tree.
+    # We never exit empty-handed because a Horos slice came back empty.
+    scoped = list(only) if only else None
+    files = list(_iter_files(root, only=scoped)) if scoped else list(_iter_files(root))
+    if scoped and not files:
+        files = list(_iter_files(root))
+        scoped = None  # the slice resolved to nothing; reflect the full-scan fallback
+
     report = {
         "repo": os.path.abspath(root),
         "files_scanned": len(files),
-        "scoped_to_files": list(only) if only else None,
+        "scoped_to_files": scoped,
         "syntax": check_syntax(files),
-        "duplicates": check_duplicates(files),
+        "duplicates": _merge_duplicate_blocks(check_duplicates(files)),
         "package_risks": check_packages(root, files),
         "comment_buzzwords": check_comment_buzzwords(files),
         "readme_hype": check_readme_hype(root),
         "structural": check_structural(root, files),
         "dead_code": check_dead_code(files),
     }
-    # a single headline number so a human can glance at it
-    report["summary"] = {
+
+    # Headline numbers, split into hard signals (concrete defects) and soft signals
+    # (stylistic / heuristic). The flat keys are retained alongside for backward-compat:
+    # the schema is the contract, so existing consumers keep working.
+    hard_signals = {
         "syntax_errors": len(report["syntax"]["errors"]),
         "duplicate_blocks": len(report["duplicates"]),
         "package_risks": len(report["package_risks"].get("risks", [])),
-        "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
         "circular_imports": len(report["structural"]["circular_imports"]),
-        "giant_files": len(report["structural"]["giant_files"]),
         "stubs": len(report["dead_code"]["stubs"]),
+    }
+    soft_signals = {
+        "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
+        "giant_files": len(report["structural"]["giant_files"]),
         "unreferenced_definitions": len(report["dead_code"]["unreferenced_definitions"]),
+        "readme_hype_files": len(report["readme_hype"]),
+    }
+    report["summary"] = {
+        "hard_signals": hard_signals,
+        "soft_signals": soft_signals,
+        # --- flat keys (backward-compat) ---
+        "syntax_errors": hard_signals["syntax_errors"],
+        "duplicate_blocks": hard_signals["duplicate_blocks"],
+        "package_risks": hard_signals["package_risks"],
+        "comment_buzzwords": soft_signals["comment_buzzwords"],
+        "circular_imports": hard_signals["circular_imports"],
+        "giant_files": soft_signals["giant_files"],
+        "stubs": hard_signals["stubs"],
+        "unreferenced_definitions": soft_signals["unreferenced_definitions"],
+        "readme_hype_files": soft_signals["readme_hype_files"],
     }
     return report
 
