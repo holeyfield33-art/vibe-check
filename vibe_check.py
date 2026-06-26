@@ -26,6 +26,7 @@ receipt to --files and vibe-check only scans the slice Horos chose.
 import argparse
 import ast
 import hashlib
+import html
 import json
 import os
 import re
@@ -56,6 +57,7 @@ GIANT_FILE_LINES = 1000
 DEEP_NEST_LEVELS = 5
 DUP_WINDOW = 4          # lines per block compared for duplication
 DUP_MIN_TOKENS = 12     # ignore trivially short duplicate blocks
+MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024  # strict 2MB ceiling per file
 
 
 # --- helpers ----------------------------------------------------------------
@@ -74,11 +76,150 @@ def _iter_files(root, only=None):
 
 
 def _read(path):
+    """Safely read text from disk, skipping oversized or binary files.
+
+    Returns None for files over MAX_FILE_SIZE_BYTES, files whose first 1KB
+    contains a NUL byte (a dependency-free binary signal), or unreadable files.
+    Callers already treat None as "nothing to scan", so this degrades cleanly
+    and keeps a beginner's messy directory (huge logs, .pyc, images) from
+    spiking memory or stalling the AST parser.
+    """
     try:
+        if os.path.getsize(path) > MAX_FILE_SIZE_BYTES:
+            return None
+        with open(path, "rb") as f:
+            if b"\x00" in f.read(1024):
+                return None
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return f.read()
     except OSError:
         return None
+
+
+# --- output formatters ------------------------------------------------------
+
+def _generate_llm_prompt(report):
+    """Formats the internal report findings into a structured prompt
+    ready for copy-pasting directly into ChatGPT or Claude."""
+    summary = report["summary"]
+    hard = summary["hard_signals"]
+    soft = summary["soft_signals"]
+
+    total_issues = sum(hard.values()) + sum(soft.values())
+    if total_issues == 0:
+        return "vibe-check scan complete: No issues detected. Your codebase is clean!"
+
+    prompt = []
+    prompt.append("### Codebase Analysis Report")
+    prompt.append("The following code quality issues and structural debt were detected. ")
+    prompt.append("Please analyze these findings and help me refactor the code to address them.\n")
+
+    # Hard Signals Section
+    if any(hard.values()):
+        prompt.append("#### High Priority Issues")
+        if hard.get("syntax_errors", 0) > 0:
+            prompt.append("- **Syntax Errors**: Resolve non-parsing files immediately.")
+            for err in report["syntax"]["errors"]:
+                prompt.append(f"  * {err['file']}:{err['line']} - {err['msg']}")
+
+        if hard.get("duplicate_blocks", 0) > 0:
+            prompt.append("- **Duplicate Blocks**: Extract these overlapping lines into shared utility helper functions:")
+            for dup in report["duplicates"][:5]:  # limit output to avoid token inflation
+                locations = ", ".join(f"{occ['file']} (L{occ['line']}-{occ['end_line']})" for occ in dup["occurrences"])
+                prompt.append(f"  * Common logic (fingerprint: {dup['fingerprint']}) found in: {locations}")
+
+        if hard.get("package_risks", 0) > 0:
+            prompt.append("- **Package Risks**: Correct undeclared dependencies and check package spelling:")
+            for r in report["package_risks"].get("risks", []):
+                prompt.append(f"  * {r['name']} - {r['reason']} ({r['severity']} severity)")
+
+        if hard.get("circular_imports", 0) > 0:
+            prompt.append("- **Circular Python Imports**: Decouple the following modules to prevent cyclic runtime issues:")
+            for cycle in report["structural"]["circular_imports"]:
+                prompt.append(f"  * Cycle between {cycle[0]} <-> {cycle[1]}")
+        prompt.append("")
+
+    # Soft Signals Section
+    if any(soft.values()):
+        prompt.append("#### Code Quality Improvements")
+        if soft.get("unreferenced_definitions", 0) > 0:
+            prompt.append("- **Dead/Unused Code**: Verify if these top-level definitions are safe to delete:")
+            for u in report["dead_code"]["unreferenced_definitions"][:10]:
+                prompt.append(f"  * {u['kind']} '{u['name']}' in {u['file']}:{u['line']} is not referenced elsewhere.")
+        prompt.append("")
+
+    prompt.append("#### Prompt Action Instructions")
+    prompt.append("1. Propose an implementation plan focusing on the High Priority Issues first.")
+    prompt.append("2. Avoid introducing new third-party dependencies while resolving them.")
+    prompt.append("3. Present the refactored code adjustments cleanly module by module.")
+
+    return "\n".join(prompt)
+
+
+def _generate_html_report(report, out_path):
+    """Outputs a visual dashboard to a local HTML file without using external network assets."""
+    summary = report["summary"]
+    hard = summary["hard_signals"]
+    soft = summary["soft_signals"]
+
+    # Escape the prompt so file paths / messages containing <, >, & render safely.
+    prompt_block = html.escape(_generate_llm_prompt(report))
+
+    html_template = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>vibe-check report</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f9fafb; color: #111827; padding: 2rem; margin: 0; }}
+        .card {{ background: #fff; border-radius: 8px; border: 1px solid #e5e7eb; padding: 1.5rem; margin-bottom: 1.5rem; }}
+        h1 {{ margin-top: 0; font-size: 1.5rem; }}
+        .badge {{ display: inline-block; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }}
+        .badge-hard {{ background: #fee2e2; color: #991b1b; }}
+        .badge-soft {{ background: #fef3c7; color: #92400e; }}
+        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }}
+        .stat-box {{ background: #f3f4f6; border-radius: 6px; padding: 1rem; text-align: center; }}
+        .stat-val {{ font-size: 1.8rem; font-weight: bold; margin-bottom: 0.25rem; }}
+        .stat-lbl {{ font-size: 0.85rem; color: #4b5563; }}
+        pre {{ background: #1f2937; color: #f9fafb; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; white-space: pre-wrap; }}
+    </style>
+</head>
+<body>
+    <div style="max-width: 900px; margin: 0 auto;">
+        <h1>vibe-check report</h1>
+        <div class="card">
+            <h3>Summary of Findings</h3>
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-val">{hard.get("syntax_errors", 0)}</div>
+                    <div class="stat-lbl">Syntax Errors</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">{hard.get("duplicate_blocks", 0)}</div>
+                    <div class="stat-lbl">Duplicate Blocks</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">{hard.get("package_risks", 0)}</div>
+                    <div class="stat-lbl">Package Risks</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val">{soft.get("unreferenced_definitions", 0)}</div>
+                    <div class="stat-lbl">Dead Code</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>Quick Actions</h3>
+            <p>Paste the following generated prompt into Claude or ChatGPT to begin refactoring:</p>
+            <pre>{prompt_block}</pre>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html_template)
 
 
 # --- checks -----------------------------------------------------------------
@@ -597,19 +738,32 @@ def main(argv=None):
     p.add_argument("--files", nargs="*", default=None,
                    help="optional allowlist of repo-relative paths (e.g. a Horos receipt selection)")
     p.add_argument("--out", default=None, help="write JSON report to this path instead of stdout")
+    p.add_argument("--html", default=None, help="also write a self-contained HTML dashboard to this path")
+    p.add_argument("--format", choices=["json", "prompt"], default="json",
+                   help="stdout format: 'json' (default) or 'prompt' (copy-paste LLM prompt)")
     args = p.parse_args(argv)
 
     if not os.path.isdir(args.repo):
         p.error(f"not a directory: {args.repo}")
     report = run(args.repo, only=args.files)
-    blob = json.dumps(report, indent=2)
+
+    if args.html:
+        _generate_html_report(report, args.html)
+        print(f"HTML report written to {args.html}")
+
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
-            f.write(blob)
+            f.write(json.dumps(report, indent=2))
         print(f"report written to {args.out}")
+
+    # Decide what goes to stdout.
+    if args.format == "prompt":
+        print(_generate_llm_prompt(report))
+    elif args.out:
+        # Legacy behavior: when writing JSON to a file, echo the summary, not the full blob.
         print(json.dumps(report["summary"], indent=2))
     else:
-        print(blob)
+        print(json.dumps(report, indent=2))
     return 0
 
 
