@@ -44,6 +44,25 @@ def handle(data):
     return result
 EOF
 
+# A second, distinct cross-file duplicate (its own contiguous block). The window
+# merge collapses each duplicated region to one finding, so this stays separate
+# from the process/handle block above -> duplicate_blocks: 2, not a pile of windows.
+cat > "$DEMO_DIR/util_a.py" << 'EOF'
+def compute_total(values):
+    total = 0
+    for v in values:
+        total += v * v
+    return total
+EOF
+
+cat > "$DEMO_DIR/util_b.py" << 'EOF'
+def compute_total(values):
+    total = 0
+    for v in values:
+        total += v * v
+    return total
+EOF
+
 cat > "$DEMO_DIR/README.md" << 'EOF'
 # Revolutionary Robust Framework
 The most powerful, seamless, cutting-edge, blazing fast, world-class solution.
@@ -71,6 +90,6 @@ python vibe_check.py "$DEMO_DIR"
 sleep 2.0
 echo
 echo "# caught: a syntax error, a typosquat (requets),"
-echo "# an undeclared import (tensorflow), a cross-file duplicate,"
+echo "# an undeclared import (tensorflow), two cross-file duplicates,"
 echo "# and a README that reads like a press release."
 sleep 2.5

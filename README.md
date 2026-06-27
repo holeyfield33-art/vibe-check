@@ -47,6 +47,29 @@ Scan only specific files (and write the report to disk):
 python vibe_check.py /path/to/repo --files src/a.py src/b.py --out report.json
 ```
 
+Other output options:
+
+```
+# Print a copy-paste-ready prompt instead of JSON (see "Using it with an LLM")
+python vibe_check.py /path/to/repo --format prompt
+
+# Also write a self-contained HTML dashboard you can open in a browser
+python vibe_check.py /path/to/repo --html report.html
+```
+
+`--out`, `--html`, and `--format` compose — you can write JSON and HTML files
+while printing the prompt to your terminal in one run. The HTML report is fully
+offline: inline CSS, no external CDNs or network calls.
+
+Not on the command line much? Double-click a launcher instead:
+[`vibe-check-launcher.command`](vibe-check-launcher.command) (macOS/Linux) or
+[`vibe-check-launcher.bat`](vibe-check-launcher.bat) (Windows). Drag your project
+folder into the prompt, press Enter, and it writes both reports and opens the
+HTML one in your browser.
+
+Files larger than 2 MB and binary files are skipped automatically, so a stray
+log dump or build artifact won't slow the scan or exhaust memory.
+
 The report is JSON on stdout (or to --out). A summary block at the top gives
 you the headline counts at a glance:
 
@@ -124,6 +147,17 @@ the model knows what to watch for:
 > block between sync.py and tools.py before you suggest changes.
 
 The model gets awareness of code quality without you having to spot it yourself.
+
+If you'd rather not hand-write that prompt, let vibe-check do it. `--format prompt`
+turns the findings into a ready-to-paste Markdown block — grouped by priority,
+with concrete refactor instructions — that you drop straight into Claude or ChatGPT:
+
+```
+python vibe_check.py /path/to/repo --format prompt
+```
+
+The same prompt is embedded in the HTML dashboard's "Quick Actions" panel, so you
+can copy it with one click after opening `report.html`.
 
 ## Optional: pair it with Horos
 

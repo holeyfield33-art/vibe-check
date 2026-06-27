@@ -709,6 +709,26 @@ def check_dead_code(files):
                     if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                         referenced.add(elt.value)
 
+        # __all__ exports count as references (AST, not regex): a name in __all__ is
+        # a public export with no in-repo call site, so it must not read as dead.
+        # Precedence: a module that defines __all__ is honored as-is. Only a module
+        # WITHOUT __all__ falls back to plain dead-code rules for its top-level defs
+        # (we never blanket-exempt __init__.py defs - that would hide real dead code).
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            elif isinstance(stmt, ast.AugAssign):
+                targets = [stmt.target]
+            else:
+                continue
+            if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+                continue
+            val = stmt.value
+            if isinstance(val, (ast.List, ast.Tuple)):
+                for elt in val.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        referenced.add(elt.value)
+
         # definitions + stub detection
         # track only MODULE-LEVEL defs for the unreferenced check (methods are
         # called via self/cls and are too false-positive-prone to flag).

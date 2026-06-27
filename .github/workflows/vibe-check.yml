@@ -18,10 +18,12 @@ jobs:
           python-version: '3.x'
 
       - name: Run vibe-check
-        run: python vibe_check.py . --out report.json
+        run: python vibe_check.py . --out report.json --html report.html
 
       - name: Upload report artifact
         uses: actions/upload-artifact@v4
         with:
           name: vibe-check-report
-          path: report.json
+          path: |
+            report.json
+            report.html
