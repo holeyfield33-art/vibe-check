@@ -251,5 +251,35 @@ class TestReadmeHypeIgnoresCode(unittest.TestCase):
         md = "# Tool\n\nThis revolutionary, robust, seamless game-changer is powerful.\n"
         self.assertEqual(self._hype(md), 1)
 
+class TestFailOnGate(unittest.TestCase):
+    """--fail-on hard returns exit 1 when hard signals exist, 0 otherwise.
+    Default (no flag) must always return 0 so existing usage never breaks."""
+
+    def _clean_repo(self, d):
+        with open(os.path.join(d, "ok.py"), "w", encoding="utf-8") as f:
+            f.write("def add(a, b):\n    return a + b\n")
+
+    def _dirty_repo(self, d):
+        # a typosquat is a hard signal
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as f:
+            f.write("requets==2.0.0\n")
+        with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as f:
+            f.write("import requets\nx = 1\n")
+
+    def test_clean_repo_fail_on_hard_exits_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._clean_repo(d)
+            self.assertEqual(vc.main([d, "--fail-on", "hard"]), 0)
+
+    def test_dirty_repo_fail_on_hard_exits_one(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._dirty_repo(d)
+            self.assertEqual(vc.main([d, "--fail-on", "hard"]), 1)
+
+    def test_dirty_repo_default_exits_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._dirty_repo(d)
+            self.assertEqual(vc.main([d]), 0)
+
 if __name__ == "__main__":
     unittest.main()

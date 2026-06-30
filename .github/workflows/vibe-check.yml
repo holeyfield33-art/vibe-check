@@ -17,10 +17,14 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Run vibe-check
-        run: python vibe_check.py . --out report.json --html report.html
+      - name: Run tests
+        run: python -W error::ResourceWarning test_vibe_check.py
+
+      - name: Run vibe-check (gate on hard signals)
+        run: python vibe_check.py . --out report.json --html report.html --fail-on hard
 
       - name: Upload report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: vibe-check-report
