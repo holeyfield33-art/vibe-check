@@ -554,6 +554,20 @@ def _scan_buzzwords(text):
     return counts
 
 
+# Matches fenced code blocks (``` ... ```) and inline code spans (`...`). Buzzwords
+# inside code are nearly always examples, test data, or specimen output - not prose
+# hype - so the markdown hype check strips them first. This is a precision tuning:
+# a README that *lists* the words it detects must not flag itself for listing them.
+_FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`[^`\n]+`")
+
+def _strip_code_spans(text):
+    """Remove fenced and inline code from markdown before prose analysis."""
+    text = _FENCED_CODE.sub(" ", text)
+    text = _INLINE_CODE.sub(" ", text)
+    return text
+
+
 def check_comment_buzzwords(files):
     total_comments = 0
     agg = defaultdict(int)
@@ -585,6 +599,10 @@ def check_readme_hype(root):
         text = _read(abs_p)
         if not text:
             continue
+        # Strip code (fenced + inline) so example/specimen buzzwords inside backticks
+        # don't read as prose hype. Word count uses the same stripped text so the
+        # density denominator stays honest.
+        text = _strip_code_spans(text)
         counts = _scan_buzzwords(text)
         words = max(len(text.split()), 1)
         hype = sum(counts.values())

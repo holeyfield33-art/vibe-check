@@ -228,5 +228,28 @@ class TestStillCatchesRealProblems(unittest.TestCase):
             self.assertGreaterEqual(report["summary"]["hard_signals"]["circular_imports"], 1)
 
 
+class TestReadmeHypeIgnoresCode(unittest.TestCase):
+    """Buzzwords inside code spans are specimens, not prose hype: they must not flag.
+    Buzzwords in prose still must. This is the precision tuning that lets a README
+    list the words it detects without flagging itself."""
+
+    def _hype(self, md):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "README.md"), "w", encoding="utf-8") as f:
+                f.write(md)
+            return vc.run(d)["summary"]["readme_hype_files"]
+
+    def test_inline_code_buzzwords_not_flagged(self):
+        md = "# Tool\n\nCatches fluff like `robust`, `seamless`, `game-changer`.\n"
+        self.assertEqual(self._hype(md), 0)
+
+    def test_fenced_code_buzzwords_not_flagged(self):
+        md = "# Tool\n\nExample output:\n\n```\nrobust seamless revolutionary\n```\n"
+        self.assertEqual(self._hype(md), 0)
+
+    def test_prose_buzzwords_still_flagged(self):
+        md = "# Tool\n\nThis revolutionary, robust, seamless game-changer is powerful.\n"
+        self.assertEqual(self._hype(md), 1)
+
 if __name__ == "__main__":
     unittest.main()

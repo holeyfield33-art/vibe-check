@@ -26,7 +26,7 @@ library only. Runs offline.
 | **syntax_errors** | Python files that do not parse (exact, via ast). Other languages are reported as skipped. |
 | **duplicates** | Identical code blocks spanning two or more files (test files excluded, repeated fixtures are not drift). |
 | **package_risks** | Imports missing from your declared dependencies, and dependency names that look like typosquats of popular packages. |
-| **comment_buzzwords** | Marketing fluff in comments (robust, seamless, game-changer, and so on). |
+| **comment_buzzwords** | Marketing fluff in comments (`robust`, `seamless`, `game-changer`, and so on). |
 | **readme_hype** | A 0-1 hype score for your markdown, based on buzzword density. |
 | **structural** | Giant files (>1000 lines), deep nesting (>5 levels), and circular imports between your own modules. |
 | **dead_code** | Stub functions (just pass / ... / raise NotImplementedError) and top-level functions/classes that nothing in the repo references. |
