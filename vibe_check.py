@@ -54,6 +54,22 @@ TYPOSQUAT_TARGETS = {
 CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", ".c", ".cpp", ".h"}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "target"}
 GIANT_FILE_LINES = 1000
+
+# --- triage policy v1 -------------------------------------------------------
+# Thresholds for the triage panel. These are POLICY, not science: chosen to flag
+# repos that would take meaningful cleanup effort, not fitted to labeled data.
+# Override via a .vibe-triage file (JSON) in the repo root. Friction is measured
+# as findings per 1000 lines of scanned code (KLOC); hard signals are absolute
+# (any occurrence gates) and never normalized - a syntax error is a failure at
+# any repo size. See README "Triage" section for the rationale.
+TRIAGE_POLICY = {
+    "friction_stub_per_kloc_high": 5.0,     # stubs/KLOC above this -> HIGH friction
+    "friction_stub_per_kloc_mod": 1.0,
+    "friction_dup_lines_per_kloc_high": 20.0,   # duplicated lines/KLOC
+    "friction_dup_lines_per_kloc_mod": 5.0,
+    "friction_dead_per_kloc_high": 3.0,     # unreferenced defs/KLOC
+    "friction_dead_per_kloc_mod": 0.5,
+}
 DEEP_NEST_LEVELS = 5
 DUP_WINDOW = 4          # lines per block compared for duplication
 DUP_MIN_TOKENS = 12     # ignore trivially short duplicate blocks
@@ -635,7 +651,9 @@ def check_structural(root, files):
     for abs_p, rel_p in py:
         mod = rel_p[:-3].replace("\\", "/").replace("/", ".")
         mod_to_file[mod] = rel_p
-        mod_to_file[mod.split(".")[-1]] = rel_p  # also bare module name
+        # NOTE: we deliberately do NOT register the bare last segment as a key.
+        # Doing so let `from http.cookies import X` forge a phantom edge to a local
+        # cookies.py. Edges now match only full dotted module paths.
     for abs_p, rel_p in py:
         src = _read(abs_p)
         if src is None:
@@ -645,26 +663,65 @@ def check_structural(root, files):
         except SyntaxError:
             continue
         this_mod = rel_p[:-3].replace("\\", "/").replace("/", ".")
+        pkg_parts = this_mod.split(".")[:-1]  # package path of the importing module
         soft, _soft_names = _soft_import_nodes(tree)
         for node in ast.walk(tree):
             if node in soft:
                 continue  # lazy / type-only / optional imports don't create runtime cycles
-            names = []
+            targets = []  # fully-qualified candidate module dotted-paths
             if isinstance(node, ast.Import):
-                names = [n.name for n in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            for nm in names:
-                for cand in (nm, nm.split(".")[-1]):
-                    if cand in mod_to_file:
-                        edges[this_mod].add(mod_to_file[cand][:-3].replace("/", "."))
+                targets = [n.name for n in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level and node.level >= 1:
+                    # relative import: resolve against this module's package.
+                    # `from . import x` and `from .sub import y` are definitively local.
+                    base = pkg_parts[:len(pkg_parts) - (node.level - 1)] if node.level > 1 else pkg_parts
+                    mod_path = (base + ([node.module] if node.module else []))
+                    targets.append(".".join(mod_path))
+                    # also the imported names (from .pkg import module_name)
+                    for n in node.names:
+                        targets.append(".".join(mod_path + [n.name]))
+                elif node.module:
+                    targets.append(node.module)
+            for nm in targets:
+                # match only on the FULL dotted path, never a bare last segment -
+                # `from http.cookies import X` must not forge an edge to a local
+                # cookies.py. A coincidental name collision is not an import edge.
+                if nm in mod_to_file:
+                    dep = mod_to_file[nm][:-3].replace("\\", "/").replace("/", ".")
+                    if dep != this_mod:
+                        edges[this_mod].add(dep)
+    # circular imports of ANY length via DFS (A->B->A and A->B->C->A both caught).
+    # Each cycle is normalized: rotated to start at its lexicographically smallest
+    # module and stored as a path of rel file paths, so output is deterministic.
     cycles = []
-    for a in edges:
-        for b in edges[a]:
-            if b != a and a in edges.get(b, set()):
-                pair = tuple(sorted((mod_to_file.get(a, a), mod_to_file.get(b, b))))
-                if pair not in [tuple(sorted(c)) for c in cycles]:
-                    cycles.append([pair[0], pair[1]])
+    seen_cycles = set()
+    visiting, visited = set(), set()
+    stack = []
+
+    def _walk(mod):
+        visiting.add(mod)
+        stack.append(mod)
+        for nxt in sorted(edges.get(mod, set())):
+            if nxt in visiting:
+                # found a back-edge; extract the cycle segment from the stack
+                seg = stack[stack.index(nxt):]
+                if len(seg) >= 2:
+                    lo = seg.index(min(seg))
+                    rot = tuple(seg[lo:] + seg[:lo])
+                    if rot not in seen_cycles:
+                        seen_cycles.add(rot)
+                        cycles.append([mod_to_file.get(m, m) for m in rot])
+            elif nxt not in visited:
+                _walk(nxt)
+        stack.pop()
+        visiting.discard(mod)
+        visited.add(mod)
+
+    for mod in sorted(edges):
+        if mod not in visited:
+            _walk(mod)
+    cycles.sort()
     return {"giant_files": giant, "deep_nesting": deep, "circular_imports": cycles}
 
 
@@ -683,6 +740,24 @@ def check_dead_code(files):
     referenced = set()  # every identifier used as a Name or Attribute anywhere
     stubs = []
 
+    # Pre-pass: any name pulled in via `from .module import Name` (relative import)
+    # anywhere in the repo is a public re-export / API surface, even if it has no
+    # in-repo call site. Counting these as referenced prevents flagging a library's
+    # public functions (consumed by external callers) as dead code.
+    for abs_p, rel_p in py:
+        src = _read(abs_p)
+        if src is None:
+            continue
+        try:
+            t = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(t):
+            if isinstance(node, ast.ImportFrom) and node.level >= 1:
+                for n in node.names:
+                    if n.name != "*":
+                        referenced.add(n.name)
+
     for abs_p, rel_p in py:
         src = _read(abs_p)
         if src is None:
@@ -692,12 +767,28 @@ def check_dead_code(files):
         except SyntaxError:
             continue
 
-        # references: any Name load or attribute access by that identifier
+        # references: Name loads always count (direct references). Attribute access
+        # (obj.attr) only counts as a reference to a top-level def when obj is an
+        # IMPORTED MODULE name in this file - so `auth.execute` references execute(),
+        # but `self.execute = True` does NOT mask a dead top-level execute() elsewhere.
+        # This kills the namespace-collision false-negative (a live get() hiding a
+        # dead get() in another file) without flagging genuine cross-module calls.
+        imported_aliases = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for n in node.names:
+                    imported_aliases.add(n.asname or n.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                for n in node.names:
+                    imported_aliases.add(n.asname or n.name)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
                 referenced.add(node.id)
             elif isinstance(node, ast.Attribute):
-                referenced.add(node.attr)
+                base = node.value
+                if isinstance(base, ast.Name) and base.id in imported_aliases:
+                    referenced.add(node.attr)
             # a name imported elsewhere in the repo (`from .auth import HTTPProxyAuth`)
             # is a real reference / public re-export, even if never called in-tree.
             elif isinstance(node, ast.ImportFrom):
@@ -853,6 +944,138 @@ def check_dead_code(files):
     return {"stubs": stubs, "unreferenced_definitions": unreferenced}
 
 
+# --- triage -----------------------------------------------------------------
+
+def _load_triage_policy(root):
+    """Policy v1 defaults, overridable by a .vibe-triage JSON file in the repo root."""
+    policy = dict(TRIAGE_POLICY)
+    path = os.path.join(root, ".vibe-triage")
+    if os.path.isfile(path):
+        raw = _read(path)
+        if raw:
+            try:
+                user = json.loads(raw)
+                if isinstance(user, dict):
+                    policy.update({k: v for k, v in user.items() if k in TRIAGE_POLICY})
+            except (ValueError, TypeError):
+                pass  # malformed override is ignored; defaults stand (deterministic)
+    return policy
+
+
+def _band(value, mod, high):
+    if value > high:
+        return "HIGH"
+    if value > mod:
+        return "MODERATE"
+    return "LOW"
+
+
+def build_triage(report, files, policy):
+    """Floor-gate triage panel. NOT a score - three independent axes plus a
+    derived disposition, every status backed by concrete reasons. Hard signals
+    are absolute gates; cognitive friction is density-based (per KLOC). The panel
+    answers one question: how much review attention does this repo deserve before
+    adoption? It deliberately does not claim 'trust', 'AI-likelihood', or
+    'production-readiness' - those overreach what static signals can support."""
+    # KLOC denominator: lines across scanned code files (floor at 0.1 to avoid /0)
+    total_lines = 0
+    for abs_p, rel_p in files:
+        if os.path.splitext(rel_p)[1] in CODE_EXT:
+            src = _read(abs_p)
+            if src is not None:
+                total_lines += len(src.splitlines())
+    kloc = max(total_lines / 1000.0, 0.1)
+
+    risks = report["package_risks"].get("risks", [])
+    typosquats = [r for r in risks if r.get("severity") == "high"]
+    undeclared = [r for r in risks if r.get("severity") == "medium"]
+    syntax_errs = report["syntax"]["errors"]
+    cycles = report["structural"]["circular_imports"]
+    stubs = report["dead_code"]["stubs"]
+    dead = report["dead_code"]["unreferenced_definitions"]
+    dups = report["duplicates"]
+    giants = report["structural"]["giant_files"]
+
+    # --- Axis 1: Integrity (absolute) ---
+    integrity_reasons = []
+    if syntax_errs:
+        integrity_reasons.append(f"{len(syntax_errs)} syntax error(s)")
+    if cycles:
+        integrity_reasons.append(f"{len(cycles)} circular import cycle(s)")
+    integrity = "FAIL" if integrity_reasons else "PASS"
+
+    # --- Axis 2: Supply chain (absolute) ---
+    supply_reasons = []
+    if typosquats:
+        supply_reasons.append(f"{len(typosquats)} possible typosquat(s)")
+    if undeclared:
+        supply_reasons.append(f"{len(undeclared)} undeclared import(s)")
+    supply = "RISK" if supply_reasons else "CLEAN"
+
+    # --- Axis 3: Cognitive friction (density per KLOC) ---
+    dup_lines = sum((o["end_line"] - o.get("start_line", o["line"]) + 1)
+                    for d in dups for o in d["occurrences"])
+    stub_density = len(stubs) / kloc
+    dead_density = len(dead) / kloc
+    dup_density = dup_lines / kloc
+    bands = [
+        _band(stub_density, policy["friction_stub_per_kloc_mod"],
+              policy["friction_stub_per_kloc_high"]),
+        _band(dup_density, policy["friction_dup_lines_per_kloc_mod"],
+              policy["friction_dup_lines_per_kloc_high"]),
+        _band(dead_density, policy["friction_dead_per_kloc_mod"],
+              policy["friction_dead_per_kloc_high"]),
+    ]
+    order = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
+    friction = max(bands, key=lambda b: order[b])
+    # Small-repo guard: below ~300 lines there isn't enough code for density to be
+    # meaningful (1 stub in a 30-line script is not "HIGH friction"). Cap friction at
+    # MODERATE for tiny repos and require an absolute floor of findings to rate at all.
+    total_findings = len(stubs) + len(dead) + (1 if dup_lines else 0)
+    if total_lines < 300 and total_findings < 5:
+        friction = "LOW" if total_findings <= 1 else "MODERATE"
+    friction_reasons = []
+    if stubs:
+        friction_reasons.append(f"{len(stubs)} stub(s) ({stub_density:.1f}/KLOC)")
+    if dup_lines:
+        friction_reasons.append(f"{dup_lines} duplicated line(s) ({dup_density:.1f}/KLOC)")
+    if dead:
+        friction_reasons.append(
+            f"{len(dead)} unreferenced def(s) ({dead_density:.1f}/KLOC, heuristic)")
+
+    # --- Disposition (floor gates: worst finding decides) ---
+    if integrity == "FAIL" or typosquats:
+        disposition = "DEEP_AUDIT_REQUIRED"
+    elif undeclared or friction == "HIGH":
+        disposition = "STANDARD_TRIAGE"
+    elif friction == "MODERATE":
+        disposition = "LIGHT_REVIEW"
+    else:
+        disposition = "FAST_TRACK"
+
+    flags = []
+    if giants:
+        flags.append(f"{len(giants)} giant file(s)")
+    if report["readme_hype"]:
+        flags.append(f"{len(report['readme_hype'])} hyped readme(s)")
+    if report["comment_buzzwords"]["buzzword_count"]:
+        flags.append(f"{report['comment_buzzwords']['buzzword_count']} comment buzzword(s)")
+
+    return {
+        "disposition": disposition,
+        "policy": "v1",
+        "kloc": round(kloc, 1),
+        "axes": {
+            "integrity": {"status": integrity, "reasons": integrity_reasons},
+            "supply_chain": {"status": supply, "reasons": supply_reasons},
+            "cognitive_friction": {"status": friction, "reasons": friction_reasons},
+        },
+        "flags": flags,
+        "note": ("Review-priority triage, not a quality/trust score. Hard axes are "
+                 "absolute; friction is per-KLOC policy v1 (override via .vibe-triage)."),
+    }
+
+
 # --- main -------------------------------------------------------------------
 
 def run(root, only=None):
@@ -908,6 +1131,7 @@ def run(root, only=None):
         "unreferenced_definitions": soft_signals["unreferenced_definitions"],
         "readme_hype_files": soft_signals["readme_hype_files"],
     }
+    report["triage"] = build_triage(report, files, _load_triage_policy(root))
     return report
 
 
@@ -918,8 +1142,9 @@ def main(argv=None):
                    help="optional allowlist of repo-relative paths (e.g. a Horos receipt selection)")
     p.add_argument("--out", default=None, help="write JSON report to this path instead of stdout")
     p.add_argument("--html", default=None, help="also write a self-contained HTML dashboard to this path")
-    p.add_argument("--format", choices=["json", "prompt"], default="json",
-                   help="stdout format: 'json' (default) or 'prompt' (copy-paste LLM prompt)")
+    p.add_argument("--format", choices=["json", "prompt", "triage"], default="json",
+                   help="stdout format: 'json' (default), 'prompt' (copy-paste LLM "
+                        "prompt), or 'triage' (the review-priority panel only)")
     p.add_argument("--fail-on", choices=["none", "hard"], default="none",
                    help="exit non-zero when signals are present: 'none' (default, always exit 0) "
                         "or 'hard' (exit 1 if any hard signal is found). For gating CI.")
@@ -941,6 +1166,8 @@ def main(argv=None):
     # Decide what goes to stdout.
     if args.format == "prompt":
         print(_generate_llm_prompt(report))
+    elif args.format == "triage":
+        print(json.dumps(report["triage"], indent=2))
     elif args.out:
         # Legacy behavior: when writing JSON to a file, echo the summary, not the full blob.
         print(json.dumps(report["summary"], indent=2))

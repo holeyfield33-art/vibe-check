@@ -281,5 +281,43 @@ class TestFailOnGate(unittest.TestCase):
             self._dirty_repo(d)
             self.assertEqual(vc.main([d]), 0)
 
+class TestTriagePanel(unittest.TestCase):
+    """Floor-gate triage: hard axes are absolute, friction is per-KLOC, disposition
+    derives from the worst finding. No scalar score."""
+
+    def _triage(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            for name, body in files.items():
+                p = os.path.join(d, name)
+                os.makedirs(os.path.dirname(p), exist_ok=True) if os.path.dirname(p) else None
+                with open(p, "w", encoding="utf-8") as f:
+                    f.write(body)
+            return vc.run(d)["triage"]
+
+    def test_clean_repo_fast_track(self):
+        t = self._triage({"ok.py": "def add(a, b):\n    return a + b\n"})
+        self.assertEqual(t["axes"]["integrity"]["status"], "PASS")
+        self.assertEqual(t["axes"]["supply_chain"]["status"], "CLEAN")
+        self.assertEqual(t["disposition"], "FAST_TRACK")
+
+    def test_syntax_error_fails_integrity(self):
+        t = self._triage({"bad.py": "def broken(:\n    pass\n"})
+        self.assertEqual(t["axes"]["integrity"]["status"], "FAIL")
+        self.assertEqual(t["disposition"], "DEEP_AUDIT_REQUIRED")
+
+    def test_typosquat_fails_supply_chain(self):
+        t = self._triage({"requirements.txt": "requets\n", "a.py": "import requets\n"})
+        self.assertEqual(t["axes"]["supply_chain"]["status"], "RISK")
+        self.assertEqual(t["disposition"], "DEEP_AUDIT_REQUIRED")
+
+    def test_multinode_cycle_fails_integrity(self):
+        t = self._triage({"a.py": "import b\n", "b.py": "import c\n", "c.py": "import a\n"})
+        self.assertEqual(t["axes"]["integrity"]["status"], "FAIL")
+
+    def test_no_scalar_score_emitted(self):
+        t = self._triage({"ok.py": "def add(a, b):\n    return a + b\n"})
+        self.assertNotIn("score", t)
+
+
 if __name__ == "__main__":
     unittest.main()
