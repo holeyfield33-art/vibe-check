@@ -727,26 +727,6 @@ def check_dead_code(files):
                     if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                         referenced.add(elt.value)
 
-        # __all__ exports count as references (AST, not regex): a name in __all__ is
-        # a public export with no in-repo call site, so it must not read as dead.
-        # Precedence: a module that defines __all__ is honored as-is. Only a module
-        # WITHOUT __all__ falls back to plain dead-code rules for its top-level defs
-        # (we never blanket-exempt __init__.py defs - that would hide real dead code).
-        for stmt in tree.body:
-            if isinstance(stmt, ast.Assign):
-                targets = stmt.targets
-            elif isinstance(stmt, ast.AugAssign):
-                targets = [stmt.target]
-            else:
-                continue
-            if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
-                continue
-            val = stmt.value
-            if isinstance(val, (ast.List, ast.Tuple)):
-                for elt in val.elts:
-                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                        referenced.add(elt.value)
-
         # definitions + stub detection
         # track only MODULE-LEVEL defs for the unreferenced check (methods are
         # called via self/cls and are too false-positive-prone to flag).
@@ -940,6 +920,9 @@ def main(argv=None):
     p.add_argument("--html", default=None, help="also write a self-contained HTML dashboard to this path")
     p.add_argument("--format", choices=["json", "prompt"], default="json",
                    help="stdout format: 'json' (default) or 'prompt' (copy-paste LLM prompt)")
+    p.add_argument("--fail-on", choices=["none", "hard"], default="none",
+                   help="exit non-zero when signals are present: 'none' (default, always exit 0) "
+                        "or 'hard' (exit 1 if any hard signal is found). For gating CI.")
     args = p.parse_args(argv)
 
     if not os.path.isdir(args.repo):
@@ -963,6 +946,14 @@ def main(argv=None):
         print(json.dumps(report["summary"], indent=2))
     else:
         print(json.dumps(report, indent=2))
+
+    # Optional CI gate: exit non-zero so a pipeline step fails on real defects.
+    # Only hard signals gate; soft (stylistic) signals never fail the build.
+    if args.fail_on == "hard":
+        hard_total = sum(report["summary"]["hard_signals"].values())
+        if hard_total > 0:
+            print(f"FAIL: {hard_total} hard signal(s) found (--fail-on hard)", file=sys.stderr)
+            return 1
     return 0
 
 
