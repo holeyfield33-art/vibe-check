@@ -310,13 +310,36 @@ class TestTriagePanel(unittest.TestCase):
         self.assertEqual(t["axes"]["supply_chain"]["status"], "RISK")
         self.assertEqual(t["disposition"], "DEEP_AUDIT_REQUIRED")
 
-    def test_multinode_cycle_fails_integrity(self):
+    def test_multinode_cycle_is_observation_not_integrity(self):
+        # cycles no longer gate Integrity (basket showed pristine libs trip detection);
+        # they are reported as observations with a type label.
         t = self._triage({"a.py": "import b\n", "b.py": "import c\n", "c.py": "import a\n"})
-        self.assertEqual(t["axes"]["integrity"]["status"], "FAIL")
+        self.assertEqual(t["axes"]["integrity"]["status"], "PASS")
+        self.assertEqual(t["observations"]["circular_imports"]["count"], 1)
+        self.assertEqual(t["observations"]["circular_imports"]["cycles"][0]["type"], "top_level")
 
     def test_no_scalar_score_emitted(self):
         t = self._triage({"ok.py": "def add(a, b):\n    return a + b\n"})
         self.assertNotIn("score", t)
+
+
+    def test_stdlib_name_collision_no_phantom_cycle(self):
+        # `from types import X` is stdlib, not a local types.py - must not forge an edge
+        t = self._triage({
+            "types.py": "from helper import go\ndef f():\n    return 1\n",
+            "helper.py": "from types import TracebackType\ndef go():\n    return 2\n",
+        })
+        self.assertEqual(t["observations"]["circular_imports"]["count"], 0)
+
+    def test_deferred_late_import_labelled(self):
+        # a cycle formed by a bottom-of-file import is tagged deferred_late_import
+        t = self._triage({
+            "a.py": "class A:\n    pass\nfrom b import B  # late\n",
+            "b.py": "from a import A\nclass B:\n    pass\n",
+        })
+        ci = t["observations"]["circular_imports"]
+        self.assertEqual(ci["count"], 1)
+        self.assertEqual(ci["cycles"][0]["type"], "deferred_late_import")
 
 
 if __name__ == "__main__":

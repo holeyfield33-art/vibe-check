@@ -55,25 +55,25 @@ CODE_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".rb", "
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", "target"}
 GIANT_FILE_LINES = 1000
 
-# --- triage policy v1 -------------------------------------------------------
-# Thresholds for the triage panel. These are POLICY, not science: chosen to flag
-# repos that would take meaningful cleanup effort, not fitted to labeled data.
-# Override via a .vibe-triage file (JSON) in the repo root. Friction is measured
-# as findings per 1000 lines of scanned code (KLOC); hard signals are absolute
-# (any occurrence gates) and never normalized - a syntax error is a failure at
-# any repo size. See README "Triage" section for the rationale.
-TRIAGE_POLICY = {
-    "friction_stub_per_kloc_high": 5.0,     # stubs/KLOC above this -> HIGH friction
-    "friction_stub_per_kloc_mod": 1.0,
-    "friction_dup_lines_per_kloc_high": 20.0,   # duplicated lines/KLOC
-    "friction_dup_lines_per_kloc_mod": 5.0,
-    "friction_dead_per_kloc_high": 3.0,     # unreferenced defs/KLOC
-    "friction_dead_per_kloc_mod": 0.5,
-}
+# any repo size. Soft signals (duplication, stubs, dead code, giant files, hype)
+# are reported as unbanded OBSERVATIONS, never classified into LOW/MOD/HIGH:
+# basket validation showed duplication coverage tracks library architecture
+# (API-surface vs logic density) far more than review burden, so no threshold
+# discriminates clean from sloppy. Observations inform a human/LLM reviewer; they
+# do not gate the disposition. See README "Triage" for the rationale.
 DEEP_NEST_LEVELS = 5
 DUP_WINDOW = 4          # lines per block compared for duplication
 DUP_MIN_TOKENS = 12     # ignore trivially short duplicate blocks
 MAX_FILE_SIZE_BYTES = 2 * 1024 * 1024  # strict 2MB ceiling per file
+
+# Stdlib top-level module names, used to stop absolute imports like `from types
+# import X` or `import io` from forging phantom cycle edges to a local module that
+# happens to share the name (types.py, io.py, http.py). Falls back to a small
+# hard-coded set on Pythons without sys.stdlib_module_names (<3.10).
+_STDLIB_NAMES = set(getattr(sys, "stdlib_module_names", set())) or {
+    "types", "io", "http", "os", "sys", "re", "json", "csv", "time", "math",
+    "abc", "ast", "copy", "enum", "queue", "socket", "struct", "typing",
+}
 
 
 # --- helpers ----------------------------------------------------------------
@@ -163,9 +163,12 @@ def _generate_llm_prompt(report):
                 prompt.append(f"  * {r['name']} - {r['reason']} ({r['severity']} severity)")
 
         if hard.get("circular_imports", 0) > 0:
-            prompt.append("- **Circular Python Imports**: Decouple the following modules to prevent cyclic runtime issues:")
-            for cycle in report["structural"]["circular_imports"]:
-                prompt.append(f"  * Cycle between {cycle[0]} <-> {cycle[1]}")
+            prompt.append("- **Circular Python Imports** (observation - verify in context; "
+                          "deferred/late imports are usually safe):")
+            for c in report["structural"]["circular_imports"]:
+                cyc = c["cycle"] if isinstance(c, dict) else c
+                kind = c.get("type", "") if isinstance(c, dict) else ""
+                prompt.append(f"  * {' -> '.join(cyc)} ({kind})")
         prompt.append("")
 
     # Soft Signals Section
@@ -468,6 +471,16 @@ def _soft_import_nodes(tree):
                 _mark(stmt)
             for stmt in node.orelse:
                 _mark(stmt)
+        # top-level conditional guards (platform/version/feature). An import under
+        # `if sys.platform...`, `if os.name...`, `if sys.version_info...` or any other
+        # top-level `if` does not execute unconditionally at module load, so it is not
+        # a hard runtime edge. We don't evaluate the guard (that would be non-
+        # deterministic across machines) - we simply treat conditional imports as soft.
+        elif isinstance(node, ast.If) and not _is_type_checking_test(node.test):
+            for stmt in node.body:
+                _mark(stmt)
+            for stmt in node.orelse:
+                _mark(stmt)
 
     # collect top-level module names that are soft anywhere in this file
     soft_names = set()
@@ -670,7 +683,9 @@ def check_structural(root, files):
                 continue  # lazy / type-only / optional imports don't create runtime cycles
             targets = []  # fully-qualified candidate module dotted-paths
             if isinstance(node, ast.Import):
-                targets = [n.name for n in node.names]
+                # skip stdlib-named absolute imports (import types / import http ...)
+                targets = [n.name for n in node.names
+                           if n.name.split(".")[0] not in _STDLIB_NAMES]
             elif isinstance(node, ast.ImportFrom):
                 if node.level and node.level >= 1:
                     # relative import: resolve against this module's package.
@@ -682,7 +697,13 @@ def check_structural(root, files):
                     for n in node.names:
                         targets.append(".".join(mod_path + [n.name]))
                 elif node.module:
-                    targets.append(node.module)
+                    # Absolute import. Skip if it names a stdlib module (e.g.
+                    # `from types import X` is stdlib, not a local types.py) - matching
+                    # those forged phantom cycle edges. Only non-stdlib absolute
+                    # imports can be first-party module references.
+                    base = node.module.split(".")[0]
+                    if base not in _STDLIB_NAMES:
+                        targets.append(node.module)
             for nm in targets:
                 # match only on the FULL dotted path, never a bare last segment -
                 # `from http.cookies import X` must not forge an edge to a local
@@ -722,6 +743,62 @@ def check_structural(root, files):
         if mod not in visited:
             _walk(mod)
     cycles.sort()
+
+    # Label each cycle for the observations panel. A cycle edge placed as a LATE
+    # import (after the first class/function/assignment in the module body - the
+    # deliberate bottom-of-file pattern that breaks import-time deadlock) is almost
+    # always safe. We track, per importing module, the set of intra-repo modules it
+    # imports LATE; if any edge of a cycle is a late import, the cycle is tagged
+    # 'deferred_late_import'. Labels inform a reviewer; they never gate.
+    late_edges = defaultdict(set)  # importer rel_p -> {imported-module rel_p via late import}
+    for abs_p, rel_p in py:
+        src = _read(abs_p)
+        if src is None:
+            continue
+        try:
+            t = ast.parse(src)
+        except SyntaxError:
+            continue
+        first_def_line = None
+        for stmt in t.body:
+            if isinstance(stmt, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.Assign, ast.AnnAssign)):
+                first_def_line = stmt.lineno
+                break
+        if first_def_line is None:
+            continue
+        this_mod = rel_p[:-3].replace("\\", "/").replace("/", ".")
+        pkg = this_mod.split(".")[:-1]
+        for stmt in t.body:
+            if not isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                continue
+            if stmt.lineno <= first_def_line:
+                continue  # early import, not late
+            tgts = []
+            if isinstance(stmt, ast.ImportFrom) and stmt.level and stmt.level >= 1:
+                base = pkg[:len(pkg) - (stmt.level - 1)] if stmt.level > 1 else pkg
+                mp = base + ([stmt.module] if stmt.module else [])
+                tgts.append(".".join(mp))
+                for n in stmt.names:
+                    tgts.append(".".join(mp + [n.name]))
+            elif isinstance(stmt, ast.ImportFrom) and stmt.module:
+                if stmt.module.split(".")[0] not in _STDLIB_NAMES:
+                    tgts.append(stmt.module)
+            elif isinstance(stmt, ast.Import):
+                tgts = [n.name for n in stmt.names
+                        if n.name.split(".")[0] not in _STDLIB_NAMES]
+            for nm in tgts:
+                if nm in mod_to_file:
+                    late_edges[rel_p].add(mod_to_file[nm])
+    labeled = []
+    for cyc in cycles:
+        is_deferred = any(
+            cyc[(i + 1) % len(cyc)] in late_edges.get(cyc[i], set())
+            for i in range(len(cyc))
+        )
+        kind = "deferred_late_import" if is_deferred else "top_level"
+        labeled.append({"cycle": cyc, "type": kind})
+    cycles = labeled
     return {"giant_files": giant, "deep_nesting": deep, "circular_imports": cycles}
 
 
@@ -946,62 +1023,67 @@ def check_dead_code(files):
 
 # --- triage -----------------------------------------------------------------
 
-def _load_triage_policy(root):
-    """Policy v1 defaults, overridable by a .vibe-triage JSON file in the repo root."""
-    policy = dict(TRIAGE_POLICY)
-    path = os.path.join(root, ".vibe-triage")
-    if os.path.isfile(path):
-        raw = _read(path)
-        if raw:
-            try:
-                user = json.loads(raw)
-                if isinstance(user, dict):
-                    policy.update({k: v for k, v in user.items() if k in TRIAGE_POLICY})
-            except (ValueError, TypeError):
-                pass  # malformed override is ignored; defaults stand (deterministic)
-    return policy
-
-
-def _band(value, mod, high):
-    if value > high:
-        return "HIGH"
-    if value > mod:
-        return "MODERATE"
-    return "LOW"
-
-
-def build_triage(report, files, policy):
-    """Floor-gate triage panel. NOT a score - three independent axes plus a
-    derived disposition, every status backed by concrete reasons. Hard signals
-    are absolute gates; cognitive friction is density-based (per KLOC). The panel
-    answers one question: how much review attention does this repo deserve before
-    adoption? It deliberately does not claim 'trust', 'AI-likelihood', or
-    'production-readiness' - those overreach what static signals can support."""
-    # KLOC denominator: lines across scanned code files (floor at 0.1 to avoid /0)
-    total_lines = 0
+def _clone_coverage(report, files):
+    """Percent of meaningful code lines that participate in any cross-file duplicate
+    block. Counted by UNIQUE line (a line is counted once no matter how many blocks
+    or files share it), so the result is a bounded 0-100 ratio, not an inflated
+    per-occurrence sum. Reported as an OBSERVATION only - never banded."""
+    dup_lines_by_file = defaultdict(set)
+    for d in report["duplicates"]:
+        for o in d["occurrences"]:
+            s = o.get("start_line", o["line"])
+            e = o.get("end_line", o["line"])
+            for ln in range(s, e + 1):
+                dup_lines_by_file[o["file"]].add(ln)
+    total_meaningful = 0
+    dup_unique = 0
     for abs_p, rel_p in files:
-        if os.path.splitext(rel_p)[1] in CODE_EXT:
-            src = _read(abs_p)
-            if src is not None:
-                total_lines += len(src.splitlines())
-    kloc = max(total_lines / 1000.0, 0.1)
+        if os.path.splitext(rel_p)[1] not in CODE_EXT or _is_test_file(rel_p):
+            continue
+        src = _read(abs_p)
+        if src is None:
+            continue
+        meaningful = {i + 1 for i, ln in enumerate(src.splitlines())
+                      if ln.strip() and not ln.strip().startswith(("#", "//", "*", "/*"))}
+        total_meaningful += len(meaningful)
+        dup_unique += len(dup_lines_by_file.get(rel_p, set()) & meaningful)
+    pct = round(100.0 * dup_unique / total_meaningful, 1) if total_meaningful else 0.0
+    return pct, dup_unique, total_meaningful
 
+
+def build_triage(report, files):
+    """Two-axis triage panel: two HARD, absolute axes that gate a disposition, plus
+    unbanded OBSERVATIONS that inform but never classify.
+
+    Hard axes (gate the disposition):
+      - Integrity  PASS/FAIL : syntax errors, circular imports. A repo that doesn't
+        parse or has import cycles is broken, at any size - never normalized.
+      - Supply chain CLEAN/RISK : typosquats, undeclared imports. Concrete and
+        actionable, no architectural bias.
+
+    Observations (raw facts, NO band): duplication coverage, stubs, unreferenced
+    defs, giant files, readme hype, comment buzzwords. Basket validation across 10
+    mature libraries (idna 0% .. httpx 24% duplication, all pristine) showed soft
+    signals track architecture, not review burden - so we surface the numbers and
+    let a human or downstream LLM judge, rather than band them into false authority.
+
+    The panel answers: does this repo have a concrete defect or supply-chain risk
+    that gates adoption? It does NOT claim 'trust', 'AI-likelihood', or 'quality'."""
     risks = report["package_risks"].get("risks", [])
     typosquats = [r for r in risks if r.get("severity") == "high"]
     undeclared = [r for r in risks if r.get("severity") == "medium"]
     syntax_errs = report["syntax"]["errors"]
     cycles = report["structural"]["circular_imports"]
-    stubs = report["dead_code"]["stubs"]
-    dead = report["dead_code"]["unreferenced_definitions"]
-    dups = report["duplicates"]
-    giants = report["structural"]["giant_files"]
 
-    # --- Axis 1: Integrity (absolute) ---
+    # --- Axis 1: Integrity (absolute) - SYNTAX ERRORS ONLY ---
+    # Circular imports were removed from this gate: basket validation showed even
+    # pristine libraries (click's platform-guarded import, werkzeug's deliberate
+    # deferred cycle) trip cycle detection, and a load-bearing PASS/FAIL gate earns
+    # trust by never false-failing. A file parses or it doesn't - that is the only
+    # signal here with zero false positives. Cycles are reported as observations.
     integrity_reasons = []
     if syntax_errs:
         integrity_reasons.append(f"{len(syntax_errs)} syntax error(s)")
-    if cycles:
-        integrity_reasons.append(f"{len(cycles)} circular import cycle(s)")
     integrity = "FAIL" if integrity_reasons else "PASS"
 
     # --- Axis 2: Supply chain (absolute) ---
@@ -1012,67 +1094,58 @@ def build_triage(report, files, policy):
         supply_reasons.append(f"{len(undeclared)} undeclared import(s)")
     supply = "RISK" if supply_reasons else "CLEAN"
 
-    # --- Axis 3: Cognitive friction (density per KLOC) ---
-    dup_lines = sum((o["end_line"] - o.get("start_line", o["line"]) + 1)
-                    for d in dups for o in d["occurrences"])
-    stub_density = len(stubs) / kloc
-    dead_density = len(dead) / kloc
-    dup_density = dup_lines / kloc
-    bands = [
-        _band(stub_density, policy["friction_stub_per_kloc_mod"],
-              policy["friction_stub_per_kloc_high"]),
-        _band(dup_density, policy["friction_dup_lines_per_kloc_mod"],
-              policy["friction_dup_lines_per_kloc_high"]),
-        _band(dead_density, policy["friction_dead_per_kloc_mod"],
-              policy["friction_dead_per_kloc_high"]),
-    ]
-    order = {"LOW": 0, "MODERATE": 1, "HIGH": 2}
-    friction = max(bands, key=lambda b: order[b])
-    # Small-repo guard: below ~300 lines there isn't enough code for density to be
-    # meaningful (1 stub in a 30-line script is not "HIGH friction"). Cap friction at
-    # MODERATE for tiny repos and require an absolute floor of findings to rate at all.
-    total_findings = len(stubs) + len(dead) + (1 if dup_lines else 0)
-    if total_lines < 300 and total_findings < 5:
-        friction = "LOW" if total_findings <= 1 else "MODERATE"
-    friction_reasons = []
-    if stubs:
-        friction_reasons.append(f"{len(stubs)} stub(s) ({stub_density:.1f}/KLOC)")
-    if dup_lines:
-        friction_reasons.append(f"{dup_lines} duplicated line(s) ({dup_density:.1f}/KLOC)")
-    if dead:
-        friction_reasons.append(
-            f"{len(dead)} unreferenced def(s) ({dead_density:.1f}/KLOC, heuristic)")
-
-    # --- Disposition (floor gates: worst finding decides) ---
+    # --- Disposition (hard axes only) ---
     if integrity == "FAIL" or typosquats:
         disposition = "DEEP_AUDIT_REQUIRED"
-    elif undeclared or friction == "HIGH":
+    elif undeclared:
         disposition = "STANDARD_TRIAGE"
-    elif friction == "MODERATE":
-        disposition = "LIGHT_REVIEW"
     else:
         disposition = "FAST_TRACK"
 
-    flags = []
-    if giants:
-        flags.append(f"{len(giants)} giant file(s)")
-    if report["readme_hype"]:
-        flags.append(f"{len(report['readme_hype'])} hyped readme(s)")
-    if report["comment_buzzwords"]["buzzword_count"]:
-        flags.append(f"{report['comment_buzzwords']['buzzword_count']} comment buzzword(s)")
+    # --- Observations (unbanded; informational) ---
+    cov_pct, dup_unique, total_meaningful = _clone_coverage(report, files)
+    stubs = report["dead_code"]["stubs"]
+    dead = report["dead_code"]["unreferenced_definitions"]
+    giants = report["structural"]["giant_files"]
+    observations = {
+        "circular_imports": {
+            "count": len(cycles),
+            "cycles": cycles,
+            "note": "reported, not gated: cycles labelled 'deferred_late_import' use "
+                    "the deliberate late-binding pattern and are usually safe; "
+                    "'top_level' cycles are worth a manual check.",
+        },
+        "duplication": {
+            "clone_coverage_percent": cov_pct,
+            "duplicated_lines": dup_unique,
+            "duplicate_blocks": len(report["duplicates"]),
+            "note": "duplication tracks library architecture (API surface) as much "
+                    "as debt; interpret in context, not as a defect.",
+        },
+        "stubs": {
+            "count": len(stubs),
+            "note": "may be intentional scaffolding for a future phase; documented "
+                    "so a reviewer can confirm they are planned, not abandoned.",
+        },
+        "unreferenced_definitions": {
+            "count": len(dead),
+            "note": "heuristic; over-reports a library's public API surface.",
+        },
+        "giant_files": len(giants),
+        "readme_hype_files": len(report["readme_hype"]),
+        "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
+    }
 
     return {
         "disposition": disposition,
-        "policy": "v1",
-        "kloc": round(kloc, 1),
         "axes": {
             "integrity": {"status": integrity, "reasons": integrity_reasons},
             "supply_chain": {"status": supply, "reasons": supply_reasons},
-            "cognitive_friction": {"status": friction, "reasons": friction_reasons},
         },
-        "flags": flags,
-        "note": ("Review-priority triage, not a quality/trust score. Hard axes are "
-                 "absolute; friction is per-KLOC policy v1 (override via .vibe-triage)."),
+        "observations": observations,
+        "note": ("Review-priority triage. Two hard axes (Integrity, Supply Chain) "
+                 "gate the disposition; observations are unbanded facts for a human "
+                 "or LLM to interpret. Not a quality/trust/AI-likelihood score."),
     }
 
 
@@ -1131,7 +1204,7 @@ def run(root, only=None):
         "unreferenced_definitions": soft_signals["unreferenced_definitions"],
         "readme_hype_files": soft_signals["readme_hype_files"],
     }
-    report["triage"] = build_triage(report, files, _load_triage_policy(root))
+    report["triage"] = build_triage(report, files)
     return report
 
 
