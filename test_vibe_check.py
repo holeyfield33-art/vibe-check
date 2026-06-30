@@ -342,5 +342,24 @@ class TestTriagePanel(unittest.TestCase):
         self.assertEqual(ci["cycles"][0]["type"], "deferred_late_import")
 
 
+    def test_dead_code_note_is_honest_about_under_reporting(self):
+        # documents the real limitation: imported-but-never-called is NOT caught
+        # (imports count as references). The note must say orphan-scanner / under-report.
+        t = self._triage({
+            "auth.py": "def validate_token():\n    return True\n",
+            "route.py": "from auth import validate_token\ndef handler():\n    return 1\n",
+        })
+        note = t["observations"]["unreferenced_definitions"]["note"].lower()
+        self.assertIn("orphan", note)
+        self.assertIn("under-report", note)
+
+    def test_giant_files_split_test_and_source(self):
+        big = "x = 1\n" * 1100
+        t = self._triage({"src.py": big, "tests/test_big.py": big})
+        gf = t["observations"]["giant_files"]
+        self.assertEqual(gf["source"], 1)
+        self.assertEqual(gf["test"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -653,7 +653,7 @@ def check_structural(root, files):
             continue
         n = len(src.splitlines())
         if n > GIANT_FILE_LINES:
-            giant.append({"file": rel_p, "lines": n})
+            giant.append({"file": rel_p, "lines": n, "is_test": _is_test_file(rel_p)})
         depth = len(rel_p.replace("\\", "/").split("/")) - 1
         if depth > DEEP_NEST_LEVELS:
             deep.append({"file": rel_p, "depth": depth})
@@ -1129,9 +1129,19 @@ def build_triage(report, files):
         },
         "unreferenced_definitions": {
             "count": len(dead),
-            "note": "heuristic; over-reports a library's public API surface.",
+            "note": "orphan scanner, not full dead-code analysis: any imported name "
+                    "counts as referenced, so an imported-but-never-called function "
+                    "is NOT flagged. It catches only definitions nothing imports at "
+                    "all. Expect under-reporting on well-wired apps; use a type-checker "
+                    "for true unused-export analysis.",
         },
-        "giant_files": len(giants),
+        "giant_files": {
+            "count": len(giants),
+            "source": sum(1 for g in giants if not g.get("is_test")),
+            "test": sum(1 for g in giants if g.get("is_test")),
+            "note": "test files are often legitimately long (fixtures, "
+                    "parametrized cases); weigh source giants more heavily.",
+        },
         "readme_hype_files": len(report["readme_hype"]),
         "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
     }
