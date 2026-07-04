@@ -134,11 +134,11 @@ def _is_docs_file(rel_p):
     or requirements-docs.txt — not the main dependency list. Flagging them as
     undeclared supply-chain risks is precision noise, so the package-risk check skips
     them the same way it skips test files."""
-    rp = rel_p.replace("\\", "/")
+    rp = rel_p.replace("\\", "/").lower()
     base = os.path.basename(rp)
     return (
-        rp.startswith("docs/") or "/docs/" in rp
-        or base == "conf.py"  # Sphinx configuration file
+        base == "conf.py"  # common Sphinx config at repo root or docs/conf.py
+        or rp.startswith("docs/") or "/docs/" in rp
     )
 
 
@@ -327,9 +327,16 @@ def _diff_reports(old, new):
     old_fps = set()
     for d in old.get("duplicates", []):
         old_fps.update(d.get("fingerprints", [d.get("fingerprint", "")]))
-    new_dups = [d for d in new["duplicates"]
-                if not any(fp in old_fps for fp in d.get("fingerprints", [d.get("fingerprint", "")]))]
-
+    new_dups = []
+    for d in new["duplicates"]:
+        fps = d.get("fingerprints", [d.get("fingerprint", "")])
+        new_fps = [fp for fp in fps if fp and fp not in old_fps]
+        if not new_fps:
+            continue
+        d2 = dict(d)
+        d2["fingerprint"] = new_fps[0]
+        d2["fingerprints"] = sorted(set(new_fps))
+        new_dups.append(d2)
     # --- package risks ---
     old_risks = {r["name"] for r in old.get("package_risks", {}).get("risks", [])}
     new_risks = [r for r in new["package_risks"].get("risks", [])
@@ -529,7 +536,7 @@ def _merge_duplicate_blocks(dups):
                 "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
                for f in sorted(node["ranges"])]
         merged.append({
-            "fingerprint": node["fingerprints"][0],
+            "fingerprint": min(node["fingerprints"]),
             "fingerprints": sorted(set(node["fingerprints"])),
             "tokens": node["tokens"],
             "occurrences": occ,
@@ -1403,7 +1410,7 @@ def main(argv=None):
             with open(args.baseline, "r", encoding="utf-8") as f:
                 old_report = json.load(f)
             if not isinstance(old_report, dict):
-                raise TypeError("baseline JSON must be an object")
+                raise ValueError("baseline report must be a JSON object")
             report = _diff_reports(old_report, report)
 
             # Recompute triage after diff so disposition/axes reflect the delta report.
@@ -1413,7 +1420,7 @@ def main(argv=None):
                 files = list(_iter_files(args.repo))
                 scoped = None
             report["triage"] = build_triage(report, files)
-        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             p.error(f"could not load baseline report: {exc}")
 
     if args.html:
