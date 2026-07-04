@@ -296,7 +296,7 @@ def _generate_summary_text(report):
         f"  {'Circular imports:':<24}{hard.get('circular_imports', 0)}",
         f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
         "",
-        f"  \u2500\u2500 Soft signals {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  \u2500\u2500 Soft signals {'(full scan)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
         f"  {'Unreferenced defs:':<24}{soft.get('unreferenced_definitions', 0)}",
         f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
         f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
