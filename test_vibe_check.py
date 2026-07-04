@@ -645,10 +645,6 @@ class TestBrokenPipeHandling(unittest.TestCase):
             self.assertEqual(ret, 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestJSPackageRisks(unittest.TestCase):
     """package.json parsing + import diffing for js/ts (mirrors the Python check)."""
 
@@ -771,3 +767,7 @@ class TestDispositionExplanation(unittest.TestCase):
             r = vc.run(d)
             self.assertEqual(r["triage"]["disposition"], "DEEP_AUDIT_REQUIRED")
             self.assertIn("syntax error", r["triage"]["explanation"])
+
+
+if __name__ == "__main__":
+    unittest.main()

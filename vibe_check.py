@@ -150,7 +150,7 @@ def _is_noncore_file(rel_p):
     rp = "/" + rel_p.replace("\\", "/").lower()
     return any(f"/{d}/" in rp for d in
                ("examples", "example", "bench", "benchmarks",
-                "fixtures", "__fixtures__", "__mocks__", "playground"))
+                "fixtures", "__fixtures__", "mocks", "__mocks__", "playground"))
 
 
 # --- output formatters ------------------------------------------------------
@@ -325,8 +325,8 @@ def _generate_summary_text(report):
         f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
         "",
         f"  \u2500\u2500 Soft signals {'(full scan)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
-        # Unreferenced defs are the one soft signal _diff_reports diffs by identity
-        # (new dead code is new debt); the other three rows stay full-scan values.
+        # Unreferenced defs and js/ts exports are the two soft signals _diff_reports
+        # diffs by identity (new dead code is new debt); the other rows stay full-scan.
         f"  {('Unreferenced (new):' if is_diff else 'Unreferenced defs:'):<24}{soft.get('unreferenced_definitions', 0)}",
         f"  {'Unreferenced js/ts:':<24}{soft.get('unreferenced_exports_js', 0)}",
         f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
@@ -616,7 +616,7 @@ _NODE_BUILTINS = {
     "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
     "events", "fs", "http", "http2", "https", "inspector", "module", "net",
     "os", "path", "perf_hooks", "process", "punycode", "querystring",
-    "readline", "repl", "stream", "string_decoder", "sys", "test", "timers",
+    "readline", "repl", "stream", "string_decoder", "sys", "timers",
     "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi",
     "worker_threads", "zlib", "bun", "deno",
 }
@@ -1454,7 +1454,14 @@ def _check_js_unreferenced_exports(files):
             continue
         tokens_by_file[rel_p] = set(_JS_IDENT_RE.findall(src))
         for m in star_re.finditer(src):
-            stem = os.path.basename(m.group(1))
+            spec = m.group(1)
+            # Only relative/path-alias re-exports name a local file; a bare
+            # package re-export (`export * from "@scope/pkg"`) re-exports
+            # external names and must not mark an unrelated local pkg.ts as
+            # public-API surface. _js_pkg_name is non-None only for packages.
+            if _js_pkg_name(spec) is not None:
+                continue
+            stem = os.path.basename(spec)
             stem = re.sub(r"\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$", "", stem)
             wildcard_stems.add(stem.lower())
         sources.append((rel_p, src))
