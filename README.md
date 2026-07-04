@@ -27,11 +27,11 @@ library only. Runs offline.
 | --- | --- |
 | **syntax_errors** | Python files that do not parse (exact, via ast). Other languages are reported as skipped. |
 | **duplicates** | Identical code blocks spanning two or more files (test files excluded, repeated fixtures are not drift). |
-| **package_risks** | Imports missing from your declared dependencies, and dependency names that look like typosquats of popular packages. |
+| **package_risks** | Imports missing from your declared dependencies — Python (requirements.txt / pyproject.toml) *and* JS/TS (every package.json's dependency blocks) — plus dependency names that look like typosquats of popular packages. A `0` is honest: the report names any ecosystem that is present but could not be checked. |
 | **comment_buzzwords** | Marketing fluff in comments (`robust`, `seamless`, `game-changer`, and so on). |
 | **readme_hype** | A 0-1 hype score for your markdown, based on buzzword density. |
 | **structural** | Giant files (>1000 lines), deep nesting (>5 levels), and circular imports between your own modules. |
-| **dead_code** | Stub functions (just pass / ... / raise NotImplementedError) and top-level functions/classes that nothing in the repo references. |
+| **dead_code** | Stub functions (just pass / ... / raise NotImplementedError), top-level Python functions/classes nothing in the repo references, and named JS/TS exports whose name appears in no other file (grep-based orphan scan; barrels, tests, examples, and docs components are never flagged). |
 
 Every check is offline and deterministic, same repo in, same report out.
 
@@ -258,9 +258,16 @@ standalone on any repo.
 ## Scope and honesty
 
 - **Python gets the deepest checks** (real AST parsing, import graph, dependency
-cross-reference). JavaScript/TypeScript and other languages get the
-language-agnostic checks (duplicates, buzzwords, file size, nesting). Syntax
-checking for non-Python files is skipped and reported as skipped, never faked.
+cross-reference). JavaScript/TypeScript gets manifest-vs-import dependency
+diffing and a grep-based orphan-export scan — honest about being coarser than
+the Python AST checks — plus all the language-agnostic checks (duplicates,
+buzzwords, file size, nesting). Other languages get the language-agnostic
+checks only. Syntax checking for non-Python files is skipped and reported as
+skipped, never faked.
+- **A zero is only a pass for what was actually checked.** The package-risk
+summary names any ecosystem that is present but unchecked (for example a Go
+repo, or a TS repo with no package.json), so a clean count can never be
+mistaken for coverage that does not exist.
 - **Package risk is offline by design.** It does not call PyPI or npm. It checks
 what it can prove locally: imports vs. declared deps, and typosquat lookalikes.
 It will not tell you a package is abandoned or trending. That needs the network

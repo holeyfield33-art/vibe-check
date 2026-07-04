@@ -645,5 +645,129 @@ class TestBrokenPipeHandling(unittest.TestCase):
             self.assertEqual(ret, 1)
 
 
+class TestJSPackageRisks(unittest.TestCase):
+    """package.json parsing + import diffing for js/ts (mirrors the Python check)."""
+
+    def _scan(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            for rel, content in files.items():
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as f:
+                    f.write(content)
+            return vc.run(d)
+
+    def test_undeclared_js_import_flagged(self):
+        r = self._scan({
+            "package.json": '{"name": "app", "dependencies": {"react": "^18.0.0"}}',
+            "src/main.ts": 'import axios from "axios";\nimport React from "react";\n',
+        })
+        risks = {x["name"]: x for x in r["package_risks"]["risks"]}
+        self.assertIn("axios", risks)
+        self.assertEqual(risks["axios"]["ecosystem"], "js")
+        self.assertNotIn("react", risks)
+
+    def test_relative_alias_builtin_and_workspace_imports_never_flagged(self):
+        r = self._scan({
+            "package.json": '{"name": "root", "dependencies": {}}',
+            "packages/core/package.json": '{"name": "@app/core", "dependencies": {}}',
+            "src/a.ts": ('import x from "./local";\n'
+                         'import y from "@/aliased";\n'
+                         'import fs from "node:fs";\n'
+                         'import path from "path";\n'
+                         'import core from "@app/core";\n'),
+        })
+        self.assertEqual(r["package_risks"]["risks"], [])
+        self.assertEqual(r["package_risks"]["ecosystems"]["js"], "checked")
+
+    def test_devdeps_and_require_covered(self):
+        r = self._scan({
+            "package.json": '{"name": "app", "devDependencies": {"vitest": "^1.0.0"}}',
+            "src/b.js": 'const v = require("vitest");\nconst missing = require("left-pad");\n',
+        })
+        names = {x["name"] for x in r["package_risks"]["risks"]}
+        self.assertEqual(names, {"left-pad"})
+
+
+class TestJSUnreferencedExports(unittest.TestCase):
+    def _scan(self, files):
+        with tempfile.TemporaryDirectory() as d:
+            for rel, content in files.items():
+                p = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(p), exist_ok=True)
+                with open(p, "w") as f:
+                    f.write(content)
+            return vc.run(d)
+
+    def test_orphan_export_flagged(self):
+        r = self._scan({
+            "src/util.ts": "export function orphanHelper(x: number) { return x; }\n",
+            "src/other.ts": "export const used = 1;\n",
+            "src/main.ts": 'import { used } from "./other";\nconsole.log(used);\n',
+        })
+        orphans = {o["name"] for o in r["dead_code"]["unreferenced_exports_js"]}
+        self.assertIn("orphanHelper", orphans)
+        self.assertNotIn("used", orphans)
+        self.assertEqual(r["summary"]["soft_signals"]["unreferenced_exports_js"], 1)
+
+    def test_barrel_reexport_counts_as_referenced(self):
+        r = self._scan({
+            "src/api.ts": "export function publicApi() { return 1; }\n",
+            "src/index.ts": 'export { publicApi } from "./api";\n',
+        })
+        self.assertEqual(r["dead_code"]["unreferenced_exports_js"], [])
+
+    def test_index_test_and_example_files_never_flagged(self):
+        r = self._scan({
+            "src/index.ts": "export function entry() { return 1; }\n",
+            "src/util.test.ts": "export function fixtureHelper() { return 2; }\n",
+            "examples/demo.ts": "export function exampleOnly() { return 3; }\n",
+        })
+        self.assertEqual(r["dead_code"]["unreferenced_exports_js"], [])
+
+
+class TestEcosystemHonesty(unittest.TestCase):
+    """A package_risks count of 0 must never read as 'pass' for an unchecked ecosystem."""
+
+    def test_ts_repo_without_package_json_says_not_checked(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.ts"), "w") as f:
+                f.write('import axios from "axios";\n')
+            r = vc.run(d)
+            self.assertTrue(r["package_risks"]["ecosystems"]["js"].startswith("not checked"))
+            text = vc._generate_summary_text(r)
+            self.assertIn("not checked: js/ts", text)
+
+    def test_checked_repo_has_no_annotation(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "package.json"), "w") as f:
+                f.write('{"name": "app", "dependencies": {}}')
+            with open(os.path.join(d, "app.ts"), "w") as f:
+                f.write("const x = 1;\n")
+            r = vc.run(d)
+            self.assertEqual(r["package_risks"]["ecosystems"]["js"], "checked")
+            self.assertNotIn("not checked", vc._generate_summary_text(r))
+
+
+class TestDispositionExplanation(unittest.TestCase):
+    def test_fast_track_explanation(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "clean.py"), "w") as f:
+                f.write("def main():\n    return 1\n")
+            r = vc.run(d)
+            self.assertEqual(r["triage"]["disposition"], "FAST_TRACK")
+            self.assertIn("no integrity or supply-chain signals",
+                          r["triage"]["explanation"])
+            self.assertIn(r["triage"]["explanation"], vc._generate_summary_text(r))
+
+    def test_deep_audit_explanation_names_blocker(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "broken.py"), "w") as f:
+                f.write("def broken(:\n    pass\n")
+            r = vc.run(d)
+            self.assertEqual(r["triage"]["disposition"], "DEEP_AUDIT_REQUIRED")
+            self.assertIn("syntax error", r["triage"]["explanation"])
+
+
 if __name__ == "__main__":
     unittest.main()
