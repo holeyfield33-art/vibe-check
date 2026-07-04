@@ -132,7 +132,7 @@ def _is_docs_file(rel_p):
     or requirements-docs.txt — not the main dependency list. Flagging them as
     undeclared supply-chain risks is precision noise, so the package-risk check skips
     them the same way it skips test files."""
-    rp = rel_p.replace("\\", "/")
+    rp = rel_p.replace("\\", "/").lower()
     base = os.path.basename(rp)
     return (
         rp.startswith("docs/") or "/docs/" in rp
