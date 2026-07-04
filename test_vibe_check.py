@@ -487,5 +487,109 @@ class TestDocsFileExclusion(unittest.TestCase):
             self.assertIn("mystery_package", risk_names)
 
 
+class TestVersion(unittest.TestCase):
+    def test_version_string_exists(self):
+        self.assertTrue(hasattr(vc, "__version__"))
+        self.assertRegex(vc.__version__, r"^\d+\.\d+\.\d+")
+
+
+class TestFailOnSupplyChain(unittest.TestCase):
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_supply_chain_exits_one_on_risk(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requets==2.0.0\n")
+            self._write(os.path.join(d, "app.py"), "import requets\n")
+            self.assertEqual(vc.main([d, "--fail-on", "supply-chain"]), 1)
+
+    def test_supply_chain_exits_zero_when_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            self.assertEqual(vc.main([d, "--fail-on", "supply-chain"]), 0)
+
+    def test_supply_chain_does_not_gate_on_other_hard_signals(self):
+        # A syntax error is hard but is NOT a package risk — must exit 0.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "broken.py"), "def oops(:\n    pass\n")
+            self.assertEqual(vc.main([d, "--fail-on", "supply-chain"]), 0)
+
+
+class TestFormatSummary(unittest.TestCase):
+    def test_summary_text_contains_key_sections(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ok.py"), "w") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                vc.main([d, "--format", "summary"])
+            text = buf.getvalue()
+        self.assertIn("Files scanned", text)
+        self.assertIn("Hard signals", text)
+        self.assertIn("Soft signals", text)
+        self.assertIn("Disposition", text)
+        # Must not contain JSON syntax
+        self.assertNotIn('"syntax_errors"', text)
+
+    def test_summary_marks_baseline_diff(self):
+        report = _make_report()
+        report["baseline_diff"] = True
+        report["repo"] = "/some/repo"
+        report["files_scanned"] = 5
+        report["triage"] = {"disposition": "FAST_TRACK"}
+        text = vc._generate_summary_text(report)
+        self.assertIn("delta vs baseline", text)
+
+
+class TestBaseline(unittest.TestCase):
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_same_scan_delta_is_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requets\n")
+            self._write(os.path.join(d, "app.py"), "import requets\n")
+            report = vc.run(d)
+            delta = vc._diff_reports(report, report)
+            self.assertEqual(delta["summary"]["hard_signals"]["package_risks"], 0)
+            self.assertTrue(delta["baseline_diff"])
+
+    def test_new_risk_appears_in_delta(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            old = vc.run(d)
+
+            self._write(os.path.join(d, "bad.py"), "import mystery_pkg\n")
+            new = vc.run(d)
+            delta = vc._diff_reports(old, new)
+            risk_names = {r["name"] for r in delta["package_risks"].get("risks", [])}
+            self.assertIn("mystery_pkg", risk_names)
+            self.assertEqual(delta["summary"]["hard_signals"]["package_risks"], 1)
+
+    def test_baseline_flag_end_to_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            baseline_path = os.path.join(d, "baseline.json")
+            # First scan: write baseline
+            vc.main([d, "--out", baseline_path])
+            # Second scan with same repo: zero new findings
+            import io, contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ret = vc.main([d, "--baseline", baseline_path, "--format", "summary"])
+            self.assertEqual(ret, 0)
+            self.assertIn("delta vs baseline", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

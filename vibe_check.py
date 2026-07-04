@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+__version__ = "1.0.0"
+
 """
 vibe-check: a zero-dependency code "vibe" scanner.
 
@@ -135,8 +137,8 @@ def _is_docs_file(rel_p):
     rp = rel_p.replace("\\", "/").lower()
     base = os.path.basename(rp)
     return (
-        rp.startswith("docs/") or "/docs/" in rp
-        or base == "conf.py"  # Sphinx configuration file
+        base == "conf.py"  # common Sphinx config at repo root or docs/conf.py
+        or rp.startswith("docs/") or "/docs/" in rp
     )
 
 
@@ -267,6 +269,127 @@ def _generate_html_report(report, out_path):
 """
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_template)
+
+
+def _generate_summary_text(report):
+    """Human-readable terminal summary — the format for the demo/GIF audience.
+    No JSON, no LLM prose: just aligned counts and the triage disposition."""
+    summary = report.get("summary", {})
+    hard = summary.get("hard_signals", {})
+    soft = summary.get("soft_signals", {})
+    triage = report.get("triage", {})
+    disposition = triage.get("disposition", "—")
+    repo = report.get("repo", "")
+    files_scanned = report.get("files_scanned", "—")
+    is_diff = report.get("baseline_diff", False)
+    bar = "\u2501" * 42
+    lines = [
+        f"vibe-check  {repo}" + (" (delta vs baseline)" if is_diff else ""),
+        bar,
+        f"  {'Files scanned:':<24}{files_scanned}",
+        f"  {'Disposition:':<24}{disposition}",
+        "",
+        f"  \u2500\u2500 Hard signals {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  {'Syntax errors:':<24}{hard.get('syntax_errors', 0)}",
+        f"  {'Duplicate blocks:':<24}{hard.get('duplicate_blocks', 0)}",
+        f"  {'Package risks:':<24}{hard.get('package_risks', 0)}",
+        f"  {'Circular imports:':<24}{hard.get('circular_imports', 0)}",
+        f"  \u2500\u2500 Soft signals \u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
+        f"  {'Readme hype files:':<24}{soft.get('readme_hype_files', 0)}",
+        bar,
+    ]
+    return "\n".join(lines)
+
+
+def _diff_reports(old, new):
+    """Return a delta report that contains only findings present in *new* but absent
+    from *old*. The result is shaped identically to a normal run() report so every
+    downstream formatter (json, summary, prompt, triage) works on it transparently.
+
+    Identity keys by check:
+      syntax        — (file, line) tuples
+      duplicates    — fingerprint strings
+      package_risks — risk name strings
+      dead_code     — (name, file) tuples for stubs and unreferenced
+      circular      — sorted tuple of the cycle path
+    """
+    # --- syntax errors ---
+    old_syntax = {(e["file"], e["line"]) for e in old.get("syntax", {}).get("errors", [])}
+    new_syntax_errors = [e for e in new["syntax"]["errors"]
+                         if (e["file"], e["line"]) not in old_syntax]
+
+    # --- duplicates ---
+    old_fps = set()
+    for d in old.get("duplicates", []):
+        old_fps.update(d.get("fingerprints", [d.get("fingerprint", "")]))
+    new_dups = []
+    for d in new["duplicates"]:
+        fps = d.get("fingerprints", [d.get("fingerprint", "")])
+        new_fps = [fp for fp in fps if fp and fp not in old_fps]
+        if not new_fps:
+            continue
+        d2 = dict(d)
+        d2["fingerprint"] = new_fps[0]
+        d2["fingerprints"] = sorted(set(new_fps))
+        new_dups.append(d2)
+    # --- package risks ---
+    old_risks = {r["name"] for r in old.get("package_risks", {}).get("risks", [])}
+    new_risks = [r for r in new["package_risks"].get("risks", [])
+                 if r["name"] not in old_risks]
+
+    # --- circular imports ---
+    old_cycles = {tuple(sorted(c["cycle"] if isinstance(c, dict) else c))
+                  for c in old.get("structural", {}).get("circular_imports", [])}
+    new_cycles = [c for c in new["structural"]["circular_imports"]
+                  if tuple(sorted(c["cycle"] if isinstance(c, dict) else c)) not in old_cycles]
+
+    # --- dead code ---
+    old_stubs = {(s["name"], s["file"]) for s in old.get("dead_code", {}).get("stubs", [])}
+    new_stubs = [s for s in new["dead_code"]["stubs"]
+                 if (s["name"], s["file"]) not in old_stubs]
+
+    old_unref = {(u["name"], u["file"]) for u in old.get("dead_code", {}).get("unreferenced_definitions", [])}
+    new_unref = [u for u in new["dead_code"]["unreferenced_definitions"]
+                 if (u["name"], u["file"]) not in old_unref]
+
+    # Build the delta report, preserving the full report shape.
+    delta = dict(new)  # shallow copy; we replace the mutable check results below
+    delta["baseline_diff"] = True
+    delta["syntax"] = dict(new["syntax"], errors=new_syntax_errors)
+    delta["duplicates"] = new_dups
+    delta["package_risks"] = dict(new["package_risks"], risks=new_risks)
+    delta["structural"] = dict(new["structural"], circular_imports=new_cycles)
+    delta["dead_code"] = {"stubs": new_stubs, "unreferenced_definitions": new_unref}
+
+    # Rebuild summary counts from the delta.
+    hard_signals = {
+        "syntax_errors": len(new_syntax_errors),
+        "duplicate_blocks": len(new_dups),
+        "package_risks": len(new_risks),
+        "circular_imports": len(new_cycles),
+        "stubs": len(new_stubs),
+    }
+    soft_signals = {
+        "comment_buzzwords": new["summary"]["soft_signals"].get("comment_buzzwords", 0),
+        "giant_files": new["summary"]["soft_signals"].get("giant_files", 0),
+        "unreferenced_definitions": len(new_unref),
+        "readme_hype_files": new["summary"]["soft_signals"].get("readme_hype_files", 0),
+    }
+    delta["summary"] = {
+        "hard_signals": hard_signals,
+        "soft_signals": soft_signals,
+        "syntax_errors": hard_signals["syntax_errors"],
+        "duplicate_blocks": hard_signals["duplicate_blocks"],
+        "package_risks": hard_signals["package_risks"],
+        "comment_buzzwords": soft_signals["comment_buzzwords"],
+        "circular_imports": hard_signals["circular_imports"],
+        "giant_files": soft_signals["giant_files"],
+        "stubs": hard_signals["stubs"],
+        "unreferenced_definitions": soft_signals["unreferenced_definitions"],
+        "readme_hype_files": soft_signals["readme_hype_files"],
+    }
+    return delta
 
 
 # --- checks -----------------------------------------------------------------
@@ -1259,17 +1382,34 @@ def main(argv=None):
                    help="optional allowlist of repo-relative paths (e.g. a Horos receipt selection)")
     p.add_argument("--out", default=None, help="write JSON report to this path instead of stdout")
     p.add_argument("--html", default=None, help="also write a self-contained HTML dashboard to this path")
-    p.add_argument("--format", choices=["json", "prompt", "triage"], default="json",
-                   help="stdout format: 'json' (default), 'prompt' (copy-paste LLM "
-                        "prompt), or 'triage' (the review-priority panel only)")
-    p.add_argument("--fail-on", choices=["none", "hard"], default="none",
-                   help="exit non-zero when signals are present: 'none' (default, always exit 0) "
-                        "or 'hard' (exit 1 if any hard signal is found). For gating CI.")
+    p.add_argument("--format", choices=["json", "prompt", "triage", "summary"], default="json",
+                   help="stdout format: 'json' (default), 'prompt' (copy-paste LLM prompt), "
+                        "'triage' (the review-priority panel only), or 'summary' (human-readable terminal output)")
+    p.add_argument("--fail-on", choices=["none", "hard", "supply-chain"], default="none",
+                   help="exit non-zero when signals are present: 'none' (default, always exit 0), "
+                        "'hard' (exit 1 if any hard signal is found), or 'supply-chain' (exit 1 if "
+                        "any package risk is found). For gating CI.")
+    p.add_argument("--baseline", default=None, metavar="REPORT_JSON",
+                   help="path to a previous JSON report; only new findings (absent from the baseline) "
+                        "are reported. Turns one-shot scans into a CI habit: fail on added debt, not "
+                        "existing debt.")
+    p.add_argument("--version", action="version", version=f"vibe-check {__version__}")
     args = p.parse_args(argv)
 
     if not os.path.isdir(args.repo):
         p.error(f"not a directory: {args.repo}")
     report = run(args.repo, only=args.files)
+
+    # Apply baseline diff before any output or gating.
+    if args.baseline:
+        try:
+            with open(args.baseline, "r", encoding="utf-8") as f:
+                old_report = json.load(f)
+            if not isinstance(old_report, dict):
+                raise ValueError("baseline report must be a JSON object")
+            report = _diff_reports(old_report, report)
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+            p.error(f"could not load baseline report: {exc}")
 
     if args.html:
         _generate_html_report(report, args.html)
@@ -1285,18 +1425,24 @@ def main(argv=None):
         print(_generate_llm_prompt(report))
     elif args.format == "triage":
         print(json.dumps(report["triage"], indent=2))
+    elif args.format == "summary":
+        print(_generate_summary_text(report))
     elif args.out:
         # Legacy behavior: when writing JSON to a file, echo the summary, not the full blob.
         print(json.dumps(report["summary"], indent=2))
     else:
         print(json.dumps(report, indent=2))
 
-    # Optional CI gate: exit non-zero so a pipeline step fails on real defects.
-    # Only hard signals gate; soft (stylistic) signals never fail the build.
+    # Optional CI gates.
     if args.fail_on == "hard":
         hard_total = sum(report["summary"]["hard_signals"].values())
         if hard_total > 0:
             print(f"FAIL: {hard_total} hard signal(s) found (--fail-on hard)", file=sys.stderr)
+            return 1
+    elif args.fail_on == "supply-chain":
+        pkg_risks = report["summary"]["hard_signals"].get("package_risks", 0)
+        if pkg_risks > 0:
+            print(f"FAIL: {pkg_risks} package risk(s) found (--fail-on supply-chain)", file=sys.stderr)
             return 1
     return 0
 
