@@ -1455,7 +1455,13 @@ def main(argv=None):
         # Point stdout's fd at devnull so the interpreter's shutdown flush
         # doesn't raise a second BrokenPipeError after we've handled this one.
         try:
-            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+            devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            try:
+                os.dup2(devnull_fd, sys.stdout.fileno())
+            finally:
+                # Close the fd dup2 duplicated; leaving it open would leak one
+                # fd per broken pipe under repeated/embedded main() calls.
+                os.close(devnull_fd)
         except (OSError, ValueError, AttributeError):
             pass  # non-file stdout (tests, embedding); nothing to redirect
 
