@@ -1,0 +1,9 @@
+# Keeps the SHA-pinned GitHub Actions in vibe-check.yml current.
+# vibe-check itself has zero dependencies; the CI pipeline is the only
+# supply-chain surface this repo has, so this is the only ecosystem watched.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
