@@ -409,7 +409,7 @@ def _merge_duplicate_blocks(dups):
                 "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
                for f in sorted(node["ranges"])]
         merged.append({
-            "fingerprint": node["fingerprints"][0],
+            "fingerprint": min(node["fingerprints"]),
             "fingerprints": sorted(set(node["fingerprints"])),
             "tokens": node["tokens"],
             "occurrences": occ,
