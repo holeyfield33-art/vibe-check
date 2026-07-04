@@ -134,9 +134,10 @@ def _is_docs_file(rel_p):
     or requirements-docs.txt — not the main dependency list. Flagging them as
     undeclared supply-chain risks is precision noise, so the package-risk check skips
     them the same way it skips test files."""
-    rp = rel_p.replace("\\", "/")
+    rp = rel_p.replace("\\", "/").lower()
+    base = os.path.basename(rp)
     return (
-        rp == "conf.py"  # common Sphinx config at repo root
+        base == "conf.py"  # common Sphinx config at repo root or docs/conf.py
         or rp.startswith("docs/") or "/docs/" in rp
     )
 
@@ -531,7 +532,7 @@ def _merge_duplicate_blocks(dups):
                 "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
                for f in sorted(node["ranges"])]
         merged.append({
-            "fingerprint": node["fingerprints"][0],
+            "fingerprint": min(node["fingerprints"]),
             "fingerprints": sorted(set(node["fingerprints"])),
             "tokens": node["tokens"],
             "occurrences": occ,
