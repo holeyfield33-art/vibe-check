@@ -135,10 +135,9 @@ def _is_docs_file(rel_p):
     undeclared supply-chain risks is precision noise, so the package-risk check skips
     them the same way it skips test files."""
     rp = rel_p.replace("\\", "/")
-    base = os.path.basename(rp)
     return (
-        rp.startswith("docs/") or "/docs/" in rp
-        or base == "conf.py"  # Sphinx configuration file
+        rp == "conf.py"  # common Sphinx config at repo root
+        or rp.startswith("docs/") or "/docs/" in rp
     )
 
 
