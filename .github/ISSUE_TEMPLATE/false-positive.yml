@@ -79,4 +79,5 @@ body:
       description: >
         Why is this pattern idiomatic / correct Python? Links to PEP, stdlib source,
         or well-known library that uses this pattern are very helpful.
+    validations:
       required: false
