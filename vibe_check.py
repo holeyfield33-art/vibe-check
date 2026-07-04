@@ -297,7 +297,9 @@ def _generate_summary_text(report):
         f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
         "",
         f"  \u2500\u2500 Soft signals {'(full scan)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
-        f"  {'Unreferenced defs:':<24}{soft.get('unreferenced_definitions', 0)}",
+        # Unreferenced defs are the one soft signal _diff_reports diffs by identity
+        # (new dead code is new debt); the other three rows stay full-scan values.
+        f"  {('Unreferenced (new):' if is_diff else 'Unreferenced defs:'):<24}{soft.get('unreferenced_definitions', 0)}",
         f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
         f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
         f"  {'Readme hype files:':<24}{soft.get('readme_hype_files', 0)}",
@@ -1425,25 +1427,37 @@ def main(argv=None):
 
     if args.html:
         _generate_html_report(report, args.html)
-        print(f"HTML report written to {args.html}")
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(json.dumps(report, indent=2))
-        print(f"report written to {args.out}")
 
-    # Decide what goes to stdout.
-    if args.format == "prompt":
-        print(_generate_llm_prompt(report))
-    elif args.format == "triage":
-        print(json.dumps(report["triage"], indent=2))
-    elif args.format == "summary":
-        print(_generate_summary_text(report))
-    elif args.out:
-        # Legacy behavior: when writing JSON to a file, echo the summary, not the full blob.
-        print(json.dumps(report["summary"], indent=2))
-    else:
-        print(json.dumps(report, indent=2))
+    # Decide what goes to stdout. Piping into head/grep/less closes the pipe
+    # early; that must not spew a traceback, and it must not change the exit
+    # code — the --fail-on contract below survives a broken pipe.
+    try:
+        if args.html:
+            print(f"HTML report written to {args.html}")
+        if args.out:
+            print(f"report written to {args.out}")
+        if args.format == "prompt":
+            print(_generate_llm_prompt(report))
+        elif args.format == "triage":
+            print(json.dumps(report["triage"], indent=2))
+        elif args.format == "summary":
+            print(_generate_summary_text(report))
+        elif args.out:
+            # Legacy behavior: when writing JSON to a file, echo the summary, not the full blob.
+            print(json.dumps(report["summary"], indent=2))
+        else:
+            print(json.dumps(report, indent=2))
+    except BrokenPipeError:
+        # Point stdout's fd at devnull so the interpreter's shutdown flush
+        # doesn't raise a second BrokenPipeError after we've handled this one.
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except (OSError, ValueError, AttributeError):
+            pass  # non-file stdout (tests, embedding); nothing to redirect
 
     # Optional CI gates.
     if args.fail_on == "hard":
