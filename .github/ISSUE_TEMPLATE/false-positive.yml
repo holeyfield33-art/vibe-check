@@ -1,0 +1,82 @@
+name: False Positive Report
+description: A vibe-check finding that is technically correct but practically noise on real, well-written code.
+title: "[FP] <check_name>: brief description"
+labels: ["false-positive", "precision"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        False positives are the most valuable bug reports for a precision-over-recall tool.
+        Please fill in every field — a minimal reproducer is required.
+
+  - type: dropdown
+    id: check
+    attributes:
+      label: Which check produced the false positive?
+      options:
+        - syntax_errors
+        - duplicates
+        - package_risks
+        - comment_buzzwords
+        - readme_hype
+        - structural / giant_files
+        - structural / deep_nesting
+        - structural / circular_imports
+        - dead_code / stubs
+        - dead_code / unreferenced_definitions
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducer
+      description: >
+        The smallest Python snippet (or file pair) that triggers the false positive.
+        Paste the actual file content — not a description of it.
+        If it requires multiple files, show each one with a filename header.
+      placeholder: |
+        # mymodule.py
+        def connect():
+            """Subclasses must implement this."""
+            raise NotImplementedError
+      render: python
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What should vibe-check report for this snippet?
+      placeholder: "No findings. `connect()` has a docstring, so it is a documented abstract method, not an abandoned TODO."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: What does vibe-check actually report? Paste the relevant JSON finding or summary line.
+      placeholder: |
+        "stubs": [{"name": "connect", "file": "mymodule.py", "line": 1}]
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: vibe-check version
+      description: Output of `python vibe_check.py --version`
+      placeholder: "vibe-check 1.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: >
+        Why is this pattern idiomatic / correct Python? Links to PEP, stdlib source,
+        or well-known library that uses this pattern are very helpful.
+      required: false
