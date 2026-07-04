@@ -1,5 +1,7 @@
 # vibe-check
 
+[![CI](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml/badge.svg)](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml)
+
 A zero-dependency code scanner that flags the things that signal AI-generated or
 rushed code. Point it at any repo, get one JSON report. No install, no API keys,
 no network, just Python stdlib.
@@ -50,6 +52,9 @@ python vibe_check.py /path/to/repo --files src/a.py src/b.py --out report.json
 Other output options:
 
 ```
+# Human-readable terminal summary (the one for demos and screenshots)
+python vibe_check.py /path/to/repo --format summary
+
 # Print a copy-paste-ready prompt instead of JSON (see "Using it with an LLM")
 python vibe_check.py /path/to/repo --format prompt
 
@@ -61,11 +66,33 @@ python vibe_check.py /path/to/repo --html report.html
 while printing the prompt to your terminal in one run. The HTML report is fully
 offline: inline CSS, no external CDNs or network calls.
 
-Not on the command line much? Double-click a launcher instead:
+CI integration:
+
+```
+# Fail the build if any hard signal (syntax error, package risk, etc.) is found
+python vibe_check.py /path/to/repo --fail-on hard
+
+# Fail only on supply-chain issues (narrowest, least-arguable gate)
+python vibe_check.py /path/to/repo --fail-on supply-chain
+
+# Report only *new* findings vs a stored baseline (don't add debt, not fix all debt)
+python vibe_check.py /path/to/repo --out baseline.json
+python vibe_check.py /path/to/repo --baseline baseline.json --fail-on hard
+```
+
+Version:
+
+```
+python vibe_check.py --version
+```
+
+### No terminal?
+
+Double-click a launcher instead:
 [`vibe-check-launcher.command`](vibe-check-launcher.command) (macOS/Linux) or
 [`vibe-check-launcher.bat`](vibe-check-launcher.bat) (Windows). Drag your project
 folder into the prompt, press Enter, and it writes both reports and opens the
-HTML one in your browser.
+HTML one in your browser. No Python knowledge required.
 
 Files larger than 2 MB and binary files are skipped automatically, so a stray
 log dump or build artifact won't slow the scan or exhaust memory.
