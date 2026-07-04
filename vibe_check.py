@@ -134,11 +134,11 @@ def _is_docs_file(rel_p):
     or requirements-docs.txt — not the main dependency list. Flagging them as
     undeclared supply-chain risks is precision noise, so the package-risk check skips
     them the same way it skips test files."""
-    rp = rel_p.replace("\\", "/")
+    rp = rel_p.replace("\\", "/").lower()
     base = os.path.basename(rp)
     return (
-        rp.startswith("docs/") or "/docs/" in rp
-        or base == "conf.py"  # Sphinx configuration file
+        base == "conf.py"  # common Sphinx config at repo root or docs/conf.py
+        or rp.startswith("docs/") or "/docs/" in rp
     )
 
 
@@ -294,11 +294,7 @@ def _generate_summary_text(report):
         f"  {'Duplicate blocks:':<24}{hard.get('duplicate_blocks', 0)}",
         f"  {'Package risks:':<24}{hard.get('package_risks', 0)}",
         f"  {'Circular imports:':<24}{hard.get('circular_imports', 0)}",
-        f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
-        "",
-        f"  \u2500\u2500 Soft signals {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
-        f"  {'Unreferenced defs:':<24}{soft.get('unreferenced_definitions', 0)}",
-        f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
+        f"  \u2500\u2500 Soft signals \u2500".rstrip("\u2500") + "\u2500" * 12,
         f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
         f"  {'Readme hype files:':<24}{soft.get('readme_hype_files', 0)}",
         bar,
@@ -327,9 +323,16 @@ def _diff_reports(old, new):
     old_fps = set()
     for d in old.get("duplicates", []):
         old_fps.update(d.get("fingerprints", [d.get("fingerprint", "")]))
-    new_dups = [d for d in new["duplicates"]
-                if not any(fp in old_fps for fp in d.get("fingerprints", [d.get("fingerprint", "")]))]
-
+    new_dups = []
+    for d in new["duplicates"]:
+        fps = d.get("fingerprints", [d.get("fingerprint", "")])
+        new_fps = [fp for fp in fps if fp and fp not in old_fps]
+        if not new_fps:
+            continue
+        d2 = dict(d)
+        d2["fingerprint"] = new_fps[0]
+        d2["fingerprints"] = sorted(set(new_fps))
+        new_dups.append(d2)
     # --- package risks ---
     old_risks = {r["name"] for r in old.get("package_risks", {}).get("risks", [])}
     new_risks = [r for r in new["package_risks"].get("risks", [])
@@ -529,7 +532,7 @@ def _merge_duplicate_blocks(dups):
                 "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
                for f in sorted(node["ranges"])]
         merged.append({
-            "fingerprint": node["fingerprints"][0],
+            "fingerprint": min(node["fingerprints"]),
             "fingerprints": sorted(set(node["fingerprints"])),
             "tokens": node["tokens"],
             "occurrences": occ,
@@ -1402,8 +1405,10 @@ def main(argv=None):
         try:
             with open(args.baseline, "r", encoding="utf-8") as f:
                 old_report = json.load(f)
+            if not isinstance(old_report, dict):
+                raise ValueError("baseline report must be a JSON object")
             report = _diff_reports(old_report, report)
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             p.error(f"could not load baseline report: {exc}")
 
     if args.html:

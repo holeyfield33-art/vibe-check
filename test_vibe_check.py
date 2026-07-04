@@ -524,7 +524,6 @@ class TestFormatSummary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "ok.py"), "w") as f:
                 f.write("def add(a, b):\n    return a + b\n")
-            out_lines = []
             import io, contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
