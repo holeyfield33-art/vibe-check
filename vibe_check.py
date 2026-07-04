@@ -322,9 +322,16 @@ def _diff_reports(old, new):
     old_fps = set()
     for d in old.get("duplicates", []):
         old_fps.update(d.get("fingerprints", [d.get("fingerprint", "")]))
-    new_dups = [d for d in new["duplicates"]
-                if not any(fp in old_fps for fp in d.get("fingerprints", [d.get("fingerprint", "")]))]
-
+    new_dups = []
+    for d in new["duplicates"]:
+        fps = d.get("fingerprints", [d.get("fingerprint", "")])
+        new_fps = [fp for fp in fps if fp and fp not in old_fps]
+        if not new_fps:
+            continue
+        d2 = dict(d)
+        d2["fingerprint"] = new_fps[0]
+        d2["fingerprints"] = sorted(set(new_fps))
+        new_dups.append(d2)
     # --- package risks ---
     old_risks = {r["name"] for r in old.get("package_risks", {}).get("risks", [])}
     new_risks = [r for r in new["package_risks"].get("risks", [])
