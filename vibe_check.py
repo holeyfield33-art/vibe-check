@@ -125,6 +125,21 @@ def _is_test_file(rel_p):
             or base == "conftest.py")
 
 
+def _is_docs_file(rel_p):
+    """True for documentation-infrastructure files that are not production Python.
+    Sphinx conf.py and anything under a docs/ directory import doc-toolchain packages
+    (pallets_sphinx_themes, sphinx_rtd_theme, etc.) that live in optional dep groups
+    or requirements-docs.txt — not the main dependency list. Flagging them as
+    undeclared supply-chain risks is precision noise, so the package-risk check skips
+    them the same way it skips test files."""
+    rp = rel_p.replace("\\", "/").lower()
+    base = os.path.basename(rp)
+    return (
+        rp.startswith("docs/") or "/docs/" in rp
+        or base == "conf.py"  # Sphinx configuration file
+    )
+
+
 # --- output formatters ------------------------------------------------------
 
 def _generate_llm_prompt(report):
@@ -317,71 +332,88 @@ def check_duplicates(files):
 
 def _merge_duplicate_blocks(dups):
     """Report-assembly merge: collapse overlapping/adjacent sliding-window hits into
-    one finding per contiguous block per occurrence file-set. The fingerprint-based
-    detection above is untouched; this only stitches windows back together so a single
-    duplicated region reads as one finding instead of N near-identical rows.
+    one finding per contiguous block. The fingerprint-based detection is untouched;
+    this only stitches windows back together so a single duplicated region reads as
+    one finding instead of N near-identical rows.
 
-    Two window-hits merge when their line ranges overlap or are adjacent in *every*
-    file of the shared file-set. Non-contiguous blocks stay distinct."""
-    groups = defaultdict(list)
+    Two nodes merge when:
+      (a) one's file-set is a subset of the other's (or they are equal), AND
+      (b) for every shared file, the line ranges overlap or are adjacent (gap <= 1).
+
+    The conservative subset condition prevents unrelated duplicate blocks that happen
+    to share one file from being incorrectly stitched together. It directly fixes the
+    adjacent-window inflation where window N hits {A,B,C,D} and window N+1 hits
+    {A,B,D} — one is a subset of the other, so they merge into a single block.
+    """
+    # Build nodes from raw duplicate windows.
+    nodes = []
     for d in dups:
-        fileset = frozenset(o["file"] for o in d["occurrences"])
-        groups[fileset].append(d)
+        ranges = {}  # file -> [start, end]
+        for o in d["occurrences"]:
+            s, e = o["line"], o.get("end_line", o["line"])
+            if o["file"] in ranges:
+                ps, pe = ranges[o["file"]]
+                ranges[o["file"]] = [min(ps, s), max(pe, e)]
+            else:
+                ranges[o["file"]] = [s, e]
+        nodes.append({"ranges": ranges, "tokens": d["tokens"],
+                      "fingerprints": [d["fingerprint"]]})
+
+    def _nodes_mergeable(a, b):
+        a_files = set(a["ranges"])
+        b_files = set(b["ranges"])
+        # One file-set must be a subset of the other (catches the click inflation case).
+        if not (a_files <= b_files or b_files <= a_files):
+            return False
+        # Ranges must overlap or be adjacent in every shared file.
+        for f in a_files & b_files:
+            as_, ae = a["ranges"][f]
+            bs, be = b["ranges"][f]
+            if not (as_ <= be + 1 and bs <= ae + 1):
+                return False
+        return True
+
+    def _merge_into(target, source):
+        for f, (bs, be) in source["ranges"].items():
+            if f in target["ranges"]:
+                ts, te = target["ranges"][f]
+                target["ranges"][f] = [min(ts, bs), max(te, be)]
+            else:
+                target["ranges"][f] = [bs, be]
+        target["tokens"] = max(target["tokens"], source["tokens"])
+        target["fingerprints"].extend(source["fingerprints"])
+
+    # Iterative merge pass over all nodes globally (no pre-grouping by file-set).
+    changed = True
+    while changed:
+        changed = False
+        out = []
+        for node in nodes:
+            placed = False
+            for ex in out:
+                if _nodes_mergeable(ex, node):
+                    _merge_into(ex, node)
+                    placed = True
+                    changed = True
+                    break
+            if not placed:
+                out.append(node)
+        nodes = out
 
     merged = []
-    for fileset, items in groups.items():
-        nodes = []
-        for d in items:
-            ranges = {}  # file -> [start, end]
-            for o in d["occurrences"]:
-                s, e = o["line"], o.get("end_line", o["line"])
-                if o["file"] in ranges:
-                    ps, pe = ranges[o["file"]]
-                    ranges[o["file"]] = [min(ps, s), max(pe, e)]
-                else:
-                    ranges[o["file"]] = [s, e]
-            nodes.append({"ranges": ranges, "tokens": d["tokens"],
-                          "fingerprints": [d["fingerprint"]]})
-
-        def mergeable(a, b):
-            for f in fileset:
-                as_, ae = a["ranges"][f]
-                bs, be = b["ranges"][f]
-                if not (as_ <= be + 1 and bs <= ae + 1):
-                    return False
-            return True
-
-        changed = True
-        while changed:
-            changed = False
-            out = []
-            for node in nodes:
-                placed = False
-                for ex in out:
-                    if mergeable(ex, node):
-                        for f in fileset:
-                            ns, ne = node["ranges"][f]
-                            es, ee = ex["ranges"][f]
-                            ex["ranges"][f] = [min(es, ns), max(ee, ne)]
-                        ex["tokens"] = max(ex["tokens"], node["tokens"])
-                        ex["fingerprints"].extend(node["fingerprints"])
-                        placed = True
-                        changed = True
-                        break
-                if not placed:
-                    out.append(node)
-            nodes = out
-
-        for node in nodes:
-            occ = [{"file": f, "line": node["ranges"][f][0],
-                    "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
-                   for f in sorted(node["ranges"])]
-            merged.append({
-                "fingerprint": node["fingerprints"][0],
-                "fingerprints": sorted(set(node["fingerprints"])),
-                "tokens": node["tokens"],
-                "occurrences": occ,
-            })
+    for node in nodes:
+        # Only emit blocks that still span 2+ distinct files after merging.
+        if len(node["ranges"]) < 2:
+            continue
+        occ = [{"file": f, "line": node["ranges"][f][0],
+                "start_line": node["ranges"][f][0], "end_line": node["ranges"][f][1]}
+               for f in sorted(node["ranges"])]
+        merged.append({
+            "fingerprint": min(node["fingerprints"]),
+            "fingerprints": sorted(set(node["fingerprints"])),
+            "tokens": node["tokens"],
+            "occurrences": occ,
+        })
     merged.sort(key=lambda d: (-len(d["occurrences"]), -d["tokens"]))
     return merged
 
@@ -503,6 +535,8 @@ def _imported_python_modules(files):
             continue
         if _is_test_file(rel_p):
             continue  # test-only imports (fixtures, test servers) aren't prod deps
+        if _is_docs_file(rel_p):
+            continue  # doc-toolchain imports (sphinx, themes) aren't prod deps
         src = _read(abs_p)
         if src is None:
             continue

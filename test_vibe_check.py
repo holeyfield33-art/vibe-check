@@ -361,5 +361,131 @@ class TestTriagePanel(unittest.TestCase):
         self.assertEqual(gf["test"], 1)
 
 
+class TestDupMergeSubset(unittest.TestCase):
+    """F3 regression: adjacent windows whose file-sets are in a subset relationship
+    must merge into one block, not inflate the duplicate_blocks count."""
+
+    def test_subset_fileset_windows_merge(self):
+        # Simulate the click smoking-gun: window at line N hits {A,B,C,D},
+        # window at line N+1 hits {A,B,D} — the second is a strict subset.
+        # Before the fix these lived in different groups and never merged.
+        raw = [
+            {
+                "fingerprint": "aaa",
+                "tokens": 13,
+                "occurrences": [
+                    {"file": "a.py", "line": 10, "end_line": 13},
+                    {"file": "b.py", "line": 20, "end_line": 23},
+                    {"file": "c.py", "line": 30, "end_line": 33},
+                    {"file": "d.py", "line": 40, "end_line": 43},
+                ],
+            },
+            {
+                "fingerprint": "bbb",
+                "tokens": 15,
+                "occurrences": [
+                    {"file": "a.py", "line": 11, "end_line": 14},  # adjacent to aaa in a.py
+                    {"file": "b.py", "line": 21, "end_line": 24},  # adjacent to aaa in b.py
+                    {"file": "d.py", "line": 41, "end_line": 44},  # adjacent to aaa in d.py
+                    # no c.py — strict subset of aaa's files
+                ],
+            },
+        ]
+        merged = vc._merge_duplicate_blocks(raw)
+        # Must collapse to exactly 1 merged block, not 2
+        self.assertEqual(len(merged), 1)
+        files_in_result = {o["file"] for o in merged[0]["occurrences"]}
+        # Superset of files is preserved
+        self.assertEqual(files_in_result, {"a.py", "b.py", "c.py", "d.py"})
+
+    def test_non_overlapping_same_fileset_stays_separate(self):
+        # Two blocks in the same files but far apart: must NOT merge.
+        raw = [
+            {
+                "fingerprint": "ccc",
+                "tokens": 12,
+                "occurrences": [
+                    {"file": "x.py", "line": 1, "end_line": 4},
+                    {"file": "y.py", "line": 1, "end_line": 4},
+                ],
+            },
+            {
+                "fingerprint": "ddd",
+                "tokens": 12,
+                "occurrences": [
+                    {"file": "x.py", "line": 100, "end_line": 103},
+                    {"file": "y.py", "line": 100, "end_line": 103},
+                ],
+            },
+        ]
+        merged = vc._merge_duplicate_blocks(raw)
+        self.assertEqual(len(merged), 2)
+
+    def test_divergent_filesets_no_subset_stay_separate(self):
+        # {X,Y} and {X,Z} — neither is a subset; must not merge even if ranges overlap in X.
+        raw = [
+            {
+                "fingerprint": "eee",
+                "tokens": 12,
+                "occurrences": [
+                    {"file": "x.py", "line": 10, "end_line": 13},
+                    {"file": "y.py", "line": 10, "end_line": 13},
+                ],
+            },
+            {
+                "fingerprint": "fff",
+                "tokens": 12,
+                "occurrences": [
+                    {"file": "x.py", "line": 11, "end_line": 14},
+                    {"file": "z.py", "line": 10, "end_line": 13},
+                ],
+            },
+        ]
+        merged = vc._merge_duplicate_blocks(raw)
+        self.assertEqual(len(merged), 2)
+
+
+class TestDocsFileExclusion(unittest.TestCase):
+    """F4 regression: docs/conf.py and files under docs/ that import doc-toolchain
+    packages must not appear in package_risks as undeclared imports."""
+
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_conf_py_import_not_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            # conf.py imports a docs-only package not in requirements.txt
+            self._write(os.path.join(d, "conf.py"),
+                        "import pallets_sphinx_themes\nproject = 'myapp'\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertNotIn("pallets_sphinx_themes", risk_names)
+
+    def test_docs_dir_import_not_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            self._write(os.path.join(d, "docs", "conf.py"),
+                        "import sphinx_rtd_theme\nproject = 'myapp'\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertNotIn("sphinx_rtd_theme", risk_names)
+
+    def test_source_undeclared_still_flagged(self):
+        # The exclusion must not suppress genuine supply-chain findings in src files.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), "requests\n")
+            self._write(os.path.join(d, "app.py"),
+                        "import requests\nimport mystery_package\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertIn("mystery_package", risk_names)
+
+
 if __name__ == "__main__":
     unittest.main()
