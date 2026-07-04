@@ -1404,8 +1404,10 @@ def main(argv=None):
         try:
             with open(args.baseline, "r", encoding="utf-8") as f:
                 old_report = json.load(f)
+            if not isinstance(old_report, dict):
+                raise ValueError("baseline report must be a JSON object")
             report = _diff_reports(old_report, report)
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             p.error(f"could not load baseline report: {exc}")
 
     if args.html:
