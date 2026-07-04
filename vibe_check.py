@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-__version__ = "1.0.0"
-
 """
 vibe-check: a zero-dependency code "vibe" scanner.
 
@@ -24,6 +22,8 @@ Usage:
 Horos integration (optional): pass the `selection[].path` list from a Horos
 receipt to --files and vibe-check only scans the slice Horos chose.
 """
+
+__version__ = "1.0.0"
 
 import argparse
 import ast
