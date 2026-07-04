@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-__version__ = "1.0.0"
-
 """
 vibe-check: a zero-dependency code "vibe" scanner.
 
@@ -24,6 +22,8 @@ Usage:
 Horos integration (optional): pass the `selection[].path` list from a Horos
 receipt to --files and vibe-check only scans the slice Horos chose.
 """
+
+__version__ = "1.0.0"
 
 import argparse
 import ast
@@ -294,7 +294,11 @@ def _generate_summary_text(report):
         f"  {'Duplicate blocks:':<24}{hard.get('duplicate_blocks', 0)}",
         f"  {'Package risks:':<24}{hard.get('package_risks', 0)}",
         f"  {'Circular imports:':<24}{hard.get('circular_imports', 0)}",
-        f"  \u2500\u2500 Soft signals \u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
+        "",
+        f"  \u2500\u2500 Soft signals {'(full scan)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  {'Unreferenced defs:':<24}{soft.get('unreferenced_definitions', 0)}",
+        f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
         f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
         f"  {'Readme hype files:':<24}{soft.get('readme_hype_files', 0)}",
         bar,
@@ -1408,6 +1412,14 @@ def main(argv=None):
             if not isinstance(old_report, dict):
                 raise ValueError("baseline report must be a JSON object")
             report = _diff_reports(old_report, report)
+
+            # Recompute triage after diff so disposition/axes reflect the delta report.
+            scoped = list(args.files) if args.files else None
+            files = list(_iter_files(args.repo, only=scoped)) if scoped else list(_iter_files(args.repo))
+            if scoped and not files:
+                files = list(_iter_files(args.repo))
+                scoped = None
+            report["triage"] = build_triage(report, files)
         except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             p.error(f"could not load baseline report: {exc}")
 
