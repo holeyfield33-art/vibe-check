@@ -591,5 +591,59 @@ class TestBaseline(unittest.TestCase):
             self.assertIn("delta vs baseline", buf.getvalue())
 
 
+class TestSummaryLabelAccuracy(unittest.TestCase):
+    """The delta summary must label unreferenced defs as diffed ('new only'),
+    because _diff_reports diffs them by identity while the other three soft
+    rows stay full-scan values. Regression test for the mislabeled header."""
+
+    def test_full_scan_uses_plain_unreferenced_label(self):
+        report = _make_report()
+        text = vc._generate_summary_text(report)
+        self.assertIn("Unreferenced defs:", text)
+        self.assertNotIn("Unreferenced (new):", text)
+
+    def test_delta_scan_marks_unreferenced_as_new_only(self):
+        report = _make_report()
+        report["baseline_diff"] = True
+        text = vc._generate_summary_text(report)
+        self.assertIn("Unreferenced (new):", text)
+        self.assertNotIn("Unreferenced defs:", text)
+
+
+class TestBrokenPipeHandling(unittest.TestCase):
+    """`vibe-check repo | head` must not spew a traceback, and the --fail-on
+    exit-code contract must survive the broken pipe."""
+
+    class _ClosedPipe:
+        """A stdout stand-in whose writes raise like a closed pipe."""
+        def write(self, s):
+            raise BrokenPipeError()
+        def flush(self):
+            pass
+
+    def _dirty_repo(self, d):
+        with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as f:
+            f.write("requets==2.0.0\n")
+        with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as f:
+            f.write("import requets\nx = 1\n")
+
+    def test_broken_pipe_is_swallowed_and_exit_is_zero_on_clean_repo(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "ok.py"), "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+            with contextlib.redirect_stdout(self._ClosedPipe()):
+                ret = vc.main([d])
+            self.assertEqual(ret, 0)
+
+    def test_broken_pipe_preserves_fail_on_exit_code(self):
+        import contextlib
+        with tempfile.TemporaryDirectory() as d:
+            self._dirty_repo(d)
+            with contextlib.redirect_stdout(self._ClosedPipe()):
+                ret = vc.main([d, "--fail-on", "hard"])
+            self.assertEqual(ret, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

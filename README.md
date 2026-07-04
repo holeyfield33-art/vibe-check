@@ -35,6 +35,42 @@ library only. Runs offline.
 
 Every check is offline and deterministic, same repo in, same report out.
 
+## The triage verdict
+
+Raw findings are useful; a review priority is more useful. Every report ends in
+a triage block (`--format triage` prints just that block) that answers one
+question: *how carefully does a human need to look at this repo?*
+
+```json
+{
+  "disposition": "DEEP_AUDIT_REQUIRED",
+  "axes": {
+    "integrity":    { "status": "FAIL", "reasons": ["1 syntax error(s)"] },
+    "supply_chain": { "status": "RISK", "reasons": ["1 possible typosquat(s)",
+                                                    "1 undeclared import(s)"] }
+  }
+}
+```
+
+Two **hard axes** gate the disposition, and only two, because only two kinds of
+finding are provable defects rather than judgment calls:
+
+- **Integrity** — syntax errors only. A file that does not parse is broken,
+  full stop.
+- **Supply chain** — typosquatted dependency names and imports missing from
+  your declared dependencies. Concrete, actionable, zero-ambiguity.
+
+Both clean → `FAST_TRACK`. One axis raised → `STANDARD_TRIAGE`. Integrity
+failed or both raised → `DEEP_AUDIT_REQUIRED`.
+
+Everything else — duplication, stubs, unreferenced definitions, giant files,
+buzzwords — is reported as **unbanded observations**: facts with honest caveat
+notes attached, for a human or an LLM to interpret in context. Duplication
+tracks library architecture as much as debt; stubs may be intentional
+scaffolding. vibe-check reports them and tells you exactly how much to trust
+each one, but it does not pretend they gate anything. The disposition is a
+review priority, not a quality score, a trust score, or an AI-likelihood score.
+
 ## Usage
 
 Scan a whole repo:
@@ -142,7 +178,8 @@ Expected summary from the planted sample is similar to:
   "circular_imports": 0,
   "giant_files": 0,
   "stubs": 0,
-  "unreferenced_definitions": 2
+  "unreferenced_definitions": 4,
+  "readme_hype_files": 1
 }
 ```
 
@@ -164,6 +201,21 @@ Embed template (replace YOUR_CAST_ID):
 ```html
 <script id="asciicast-YOUR_CAST_ID" src="https://asciinema.org/a/YOUR_CAST_ID.js" async></script>
 ```
+
+## Tests
+
+The suite is 46 tests, stdlib `unittest`, zero test dependencies — the same
+rule the tool lives by:
+
+```
+python test_vibe_check.py
+```
+
+CI runs the suite on every push and PR, then runs vibe-check on this
+repository with `--fail-on hard`. The scanner passes its own scan, and the
+build fails if that ever stops being true. Every confirmed false positive
+becomes a regression test; heuristics are validated against real library
+sources (`click`, `jinja2`, `requests`, `flask`) before they ship.
 
 ## Using it with an LLM
 

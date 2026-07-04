@@ -3,3 +3,4 @@ __pycache__/
 report.json
 sample-report.json
 sample-project/
+.env
