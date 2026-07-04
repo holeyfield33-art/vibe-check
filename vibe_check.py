@@ -142,12 +142,6 @@ def _is_docs_file(rel_p):
     )
 
 
-def _is_noncore_file(rel_p):
-    """True for files under examples/, bench(marks)/, fixtures/, mocks/ or
-    playground/ directories. These import demo-only, benchmark-only, or
-    deliberately fake packages by design, so supply-chain and dead-export
-    checks skip them the same way they skip tests and docs."""
-    rp = "/" + rel_p.replace("\\", "/").lower()
     return any(f"/{d}/" in rp for d in
                ("examples", "example", "bench", "benchmarks",
                 "fixtures", "__fixtures__", "mocks", "__mocks__", "playground"))
