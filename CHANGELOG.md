@@ -5,6 +5,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.0] — 2026-07-04
+
+JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-language repos.
+
+### Added
+- **package_risks: JS/TS ecosystem.** Parses `dependencies` / `devDependencies` / `peerDependencies` / `optionalDependencies` from every `package.json` in the tree (monorepo-aware; workspace package names are first-party) and diffs against `import`/`export ... from`, `require()`, and dynamic `import()` specifiers. Node builtins, relative paths, path aliases, and URL imports are excluded. Comments and template literals are stripped first so code *examples* embedded in strings never become supply-chain flags.
+- **dead_code: `unreferenced_exports_js`.** Grep-based orphan scan for named JS/TS value exports (function/class/const) whose identifier appears in no other file. Precision guards: barrel/index files, `export *` re-export targets, tests, examples, benchmarks, configs, `.d.ts`, and components referenced from markup (`.mdx`, `.astro`, `.vue`, `.svelte`) are never flagged. Basket-validated: zod went 106 → 2 findings after tuning.
+- **Ecosystem honesty contract.** `package_risks.ecosystems` reports checked / not-checked per ecosystem, and the `--format summary` package-risk row is annotated (e.g. `0  (not checked: js/ts)`) whenever a present language could not be verified. A stdlib-only repo with no manifest reports *checked*, not unchecked — there is nothing to declare.
+- **Triage `explanation`.** One plain-language line under the disposition (e.g. `FAST_TRACK — no integrity or supply-chain signals blocking review`) so output is readable without knowing the tool.
+
+### Changed
+- Imports in `examples/`, `bench/`, `fixtures/`, `__mocks__/`, and `playground/` directories are no longer treated as production dependencies (both ecosystems), matching the existing tests/docs exclusions. Validated against click, requests-era fixtures, zod, and vercel/ai.
+
+---
+
 ## [1.0.0] — 2026-07-04
 
 Initial public release.

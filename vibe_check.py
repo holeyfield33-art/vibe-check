@@ -23,7 +23,7 @@ Horos integration (optional): pass the `selection[].path` list from a Horos
 receipt to --files and vibe-check only scans the slice Horos chose.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import argparse
 import ast
@@ -142,6 +142,17 @@ def _is_docs_file(rel_p):
     )
 
 
+def _is_noncore_file(rel_p):
+    """True for files under examples/, bench(marks)/, fixtures/, mocks/ or
+    playground/ directories. These import demo-only, benchmark-only, or
+    deliberately fake packages by design, so supply-chain and dead-export
+    checks skip them the same way they skip tests and docs."""
+    rp = "/" + rel_p.replace("\\", "/").lower()
+    return any(f"/{d}/" in rp for d in
+               ("examples", "example", "bench", "benchmarks",
+                "fixtures", "__fixtures__", "__mocks__", "playground"))
+
+
 # --- output formatters ------------------------------------------------------
 
 def _generate_llm_prompt(report):
@@ -195,6 +206,10 @@ def _generate_llm_prompt(report):
             prompt.append("- **Possibly Dead Code**: These top-level definitions aren't referenced anywhere *in this repo*. If they're part of your public API (imported by external callers), they're fine - otherwise consider removing them:")
             for u in report["dead_code"]["unreferenced_definitions"][:10]:
                 prompt.append(f"  * {u['kind']} '{u['name']}' in {u['file']}:{u['line']} has no in-repo references.")
+        if soft.get("unreferenced_exports_js", 0) > 0:
+            prompt.append("- **Possibly Dead JS/TS Exports** (grep-based, imprecise): these named exports appear in no other js/ts file in the repo. If they're public API for external consumers, they're fine - otherwise consider removing them:")
+            for u in report["dead_code"].get("unreferenced_exports_js", [])[:10]:
+                prompt.append(f"  * export '{u['name']}' in {u['file']}:{u['line']} has no in-repo references.")
         prompt.append("")
 
     prompt.append("#### Prompt Action Instructions")
@@ -279,6 +294,18 @@ def _generate_summary_text(report):
     soft = summary.get("soft_signals", {})
     triage = report.get("triage", {})
     disposition = triage.get("disposition", "—")
+    explanation = triage.get("explanation", "")
+
+    # Honesty annotation: a package-risk count of 0 only means "pass" for
+    # ecosystems that were actually checked. Name anything present-but-unchecked.
+    eco = report.get("package_risks", {}).get("ecosystems", {})
+    unchecked = []
+    if str(eco.get("js", "")).startswith("not checked"):
+        unchecked.append("js/ts")
+    if str(eco.get("python", "")).startswith("not checked"):
+        unchecked.append("python")
+    unchecked += eco.get("other_unchecked", [])
+    pkg_annot = f"  (not checked: {', '.join(unchecked)})" if unchecked else ""
     repo = report.get("repo", "")
     files_scanned = report.get("files_scanned", "—")
     is_diff = report.get("baseline_diff", False)
@@ -287,12 +314,13 @@ def _generate_summary_text(report):
         f"vibe-check  {repo}" + (" (delta vs baseline)" if is_diff else ""),
         bar,
         f"  {'Files scanned:':<24}{files_scanned}",
-        f"  {'Disposition:':<24}{disposition}",
+        f"  {'Disposition:':<24}{disposition}"
+        + (f"\n  {'':<24}{explanation}" if explanation else ""),
         "",
         f"  \u2500\u2500 Hard signals {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
         f"  {'Syntax errors:':<24}{hard.get('syntax_errors', 0)}",
         f"  {'Duplicate blocks:':<24}{hard.get('duplicate_blocks', 0)}",
-        f"  {'Package risks:':<24}{hard.get('package_risks', 0)}",
+        f"  {'Package risks:':<24}{hard.get('package_risks', 0)}{pkg_annot}",
         f"  {'Circular imports:':<24}{hard.get('circular_imports', 0)}",
         f"  {'Stubs:':<24}{hard.get('stubs', 0)}",
         "",
@@ -300,6 +328,7 @@ def _generate_summary_text(report):
         # Unreferenced defs are the one soft signal _diff_reports diffs by identity
         # (new dead code is new debt); the other three rows stay full-scan values.
         f"  {('Unreferenced (new):' if is_diff else 'Unreferenced defs:'):<24}{soft.get('unreferenced_definitions', 0)}",
+        f"  {'Unreferenced js/ts:':<24}{soft.get('unreferenced_exports_js', 0)}",
         f"  {'Giant files:':<24}{soft.get('giant_files', 0)}",
         f"  {'Comment buzzwords:':<24}{soft.get('comment_buzzwords', 0)}",
         f"  {'Readme hype files:':<24}{soft.get('readme_hype_files', 0)}",
@@ -359,6 +388,10 @@ def _diff_reports(old, new):
     new_unref = [u for u in new["dead_code"]["unreferenced_definitions"]
                  if (u["name"], u["file"]) not in old_unref]
 
+    old_js = {(u["name"], u["file"]) for u in old.get("dead_code", {}).get("unreferenced_exports_js", [])}
+    new_js = [u for u in new["dead_code"].get("unreferenced_exports_js", [])
+              if (u["name"], u["file"]) not in old_js]
+
     # Build the delta report, preserving the full report shape.
     delta = dict(new)  # shallow copy; we replace the mutable check results below
     delta["baseline_diff"] = True
@@ -366,7 +399,8 @@ def _diff_reports(old, new):
     delta["duplicates"] = new_dups
     delta["package_risks"] = dict(new["package_risks"], risks=new_risks)
     delta["structural"] = dict(new["structural"], circular_imports=new_cycles)
-    delta["dead_code"] = {"stubs": new_stubs, "unreferenced_definitions": new_unref}
+    delta["dead_code"] = {"stubs": new_stubs, "unreferenced_definitions": new_unref,
+                          "unreferenced_exports_js": new_js}
 
     # Rebuild summary counts from the delta.
     hard_signals = {
@@ -380,6 +414,7 @@ def _diff_reports(old, new):
         "comment_buzzwords": new["summary"]["soft_signals"].get("comment_buzzwords", 0),
         "giant_files": new["summary"]["soft_signals"].get("giant_files", 0),
         "unreferenced_definitions": len(new_unref),
+        "unreferenced_exports_js": len(new_js),
         "readme_hype_files": new["summary"]["soft_signals"].get("readme_hype_files", 0),
     }
     delta["summary"] = {
@@ -571,6 +606,129 @@ def _parse_python_deps(root):
     return declared, found_any
 
 
+# --- js/ts dependency checks (regex-based, stdlib only) -----------------------
+
+_JS_EXT = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
+
+# Node builtins by first path segment (fs, fs/promises, node:fs all resolve here).
+_NODE_BUILTINS = {
+    "assert", "async_hooks", "buffer", "child_process", "cluster", "console",
+    "constants", "crypto", "dgram", "diagnostics_channel", "dns", "domain",
+    "events", "fs", "http", "http2", "https", "inspector", "module", "net",
+    "os", "path", "perf_hooks", "process", "punycode", "querystring",
+    "readline", "repl", "stream", "string_decoder", "sys", "test", "timers",
+    "tls", "trace_events", "tty", "url", "util", "v8", "vm", "wasi",
+    "worker_threads", "zlib", "bun", "deno",
+}
+
+# import ... from 'x' / export ... from 'x' (multi-line safe: anchors on `from`),
+# side-effect `import 'x'`, `require('x')`, and dynamic `import('x')`.
+_JS_SPEC_RES = [
+    re.compile(r"""\bfrom\s+["']([^"'\n]+)["']"""),
+    re.compile(r"""\bimport\s+["']([^"'\n]+)["']"""),
+    re.compile(r"""\brequire\(\s*["']([^"'\n]+)["']\s*\)"""),
+    re.compile(r"""\bimport\(\s*["']([^"'\n]+)["']\s*\)"""),
+]
+
+
+_NPM_NAME_RE = re.compile(r"^(?:@[a-z0-9~._-]+/)?[a-z0-9~._-]+$", re.IGNORECASE)
+
+# Comments and template literals hold code *examples* (docs registries, snippet
+# generators, "adapted from X" credits), not real imports. Strip them before the
+# import scan so quoted example code never becomes a supply-chain flag.
+_JS_STRIP_RES = [
+    re.compile(r"/\*.*?\*/", re.DOTALL),   # block comments
+    re.compile(r"//[^\n]*"),               # line comments
+    re.compile(r"`(?:\\.|[^`\\])*`", re.DOTALL),  # template literals
+]
+
+
+def _strip_js_noncode(src):
+    for rx in _JS_STRIP_RES:
+        src = rx.sub(" ", src)
+    return src
+
+
+def _js_pkg_name(spec):
+    """Normalize an import specifier to a package name, or None for
+    relative paths, path aliases, URLs, and node builtins."""
+    if not spec or spec[0] in "./~#" or spec.startswith("@/"):
+        return None
+    head = spec.split("/", 1)[0]
+    if ":" in head:  # node:, npm:, https:, data:, jsr: ...
+        scheme, _, rest = spec.partition(":")
+        if scheme == "npm":
+            return _js_pkg_name(rest)
+        return None  # node builtins and URL imports are never a manifest risk
+    parts = spec.split("/")
+    if spec.startswith("@"):
+        name = "/".join(parts[:2]).lower() if len(parts) >= 2 else None
+    else:
+        name = parts[0].lower()
+        if name in _NODE_BUILTINS:
+            return None
+    # npm name charset: anything else ($env, ${var}, escaped slashes) is a
+    # template literal or code-in-a-string, not a real specifier.
+    if not name or not _NPM_NAME_RE.match(name):
+        return None
+    return name
+
+
+def _parse_js_deps(root):
+    """Declared JS deps from every package.json in the tree (monorepos declare
+    per-package). Returns (declared_names, local_package_names, found_any).
+    Local names = each package.json's own "name": workspace-internal imports
+    like @scope/provider are first-party and must never be flagged."""
+    declared, local_names = set(), set()
+    found_any = False
+    dep_blocks = ("dependencies", "devDependencies",
+                  "peerDependencies", "optionalDependencies")
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        if "package.json" not in filenames:
+            continue
+        raw = _read(os.path.join(dirpath, "package.json"))
+        if raw is None:
+            continue
+        try:
+            pkg = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(pkg, dict):
+            continue
+        found_any = True
+        for block in dep_blocks:
+            deps = pkg.get(block)
+            if isinstance(deps, dict):
+                declared.update(k.lower() for k in deps)
+        name = pkg.get("name")
+        if isinstance(name, str) and name:
+            local_names.add(name.lower())
+    return declared, local_names, found_any
+
+
+def _imported_js_modules(files):
+    """Best-effort bare package specifiers imported across production js/ts
+    files. Tests, docs, examples, benchmarks and fixtures are skipped: they
+    import test-only tooling and deliberately fake package names by design."""
+    imported = set()
+    for abs_p, rel_p in files:
+        if os.path.splitext(rel_p)[1] not in _JS_EXT:
+            continue
+        if _is_test_file(rel_p) or _is_docs_file(rel_p) or _is_noncore_file(rel_p):
+            continue
+        src = _read(abs_p)
+        if src is None:
+            continue
+        src = _strip_js_noncode(src)
+        for rx in _JS_SPEC_RES:
+            for m in rx.finditer(src):
+                name = _js_pkg_name(m.group(1).strip())
+                if name:
+                    imported.add(name)
+    return imported
+
+
 def _soft_import_nodes(tree):
     """Return (soft_nodes, soft_names) where:
       - soft_nodes: import-statement AST nodes that are NOT hard runtime imports
@@ -666,6 +824,8 @@ def _imported_python_modules(files):
             continue  # test-only imports (fixtures, test servers) aren't prod deps
         if _is_docs_file(rel_p):
             continue  # doc-toolchain imports (sphinx, themes) aren't prod deps
+        if _is_noncore_file(rel_p):
+            continue  # example/bench imports aren't prod deps either
         src = _read(abs_p)
         if src is None:
             continue
@@ -690,15 +850,75 @@ def _imported_python_modules(files):
 
 
 def check_packages(root, files):
-    """High-signal offline package checks: imported-but-undeclared (excluding local
-    modules) and typosquat names. Avoids low-signal 'declared but unused' noise for
-    tooling that is run, not imported (uvicorn, pytest, etc.)."""
+    """High-signal offline package checks, per ecosystem:
+      - Python: imported-but-undeclared (vs requirements.txt/pyproject.toml,
+        excluding local modules) and typosquat names.
+      - JS/TS: imported-but-undeclared (vs every package.json's dependency
+        blocks, excluding workspace-internal package names).
+    Avoids low-signal 'declared but unused' noise for tooling that is run,
+    not imported (uvicorn, pytest, vitest, etc.).
+
+    The `ecosystems` block is the honesty contract: a 0 only means "pass" for
+    ecosystems marked checked. Anything present-but-unchecked is named, so a
+    clean count is never mistaken for coverage that doesn't exist."""
+    exts_present = {os.path.splitext(r)[1] for _, r in files}
+    has_py = ".py" in exts_present
+    has_js = bool(exts_present & _JS_EXT)
+    other_langs = sorted({lang for ext, lang in
+                          {".go": "go", ".rs": "rust", ".java": "java",
+                           ".rb": "ruby", ".c": "c/c++", ".cpp": "c/c++",
+                           ".h": "c/c++"}.items() if ext in exts_present})
+
     risks = []
+    ecosystems = {}
+    if other_langs:
+        ecosystems["other_unchecked"] = other_langs
+
+    # --- JS/TS ecosystem ---
+    if not has_js:
+        ecosystems["js"] = "no js/ts files"
+    else:
+        js_declared, js_local, js_found = _parse_js_deps(root)
+        if not js_found:
+            # No manifest to diff against - but if nothing third-party is
+            # imported either, there is nothing to declare and the repo is
+            # verifiably clean, not unchecked.
+            if _imported_js_modules(files):
+                ecosystems["js"] = "not checked: no package.json found"
+            else:
+                ecosystems["js"] = "checked (no third-party imports, no manifest needed)"
+        else:
+            ecosystems["js"] = "checked"
+            for imp in sorted(_imported_js_modules(files)):
+                if imp in js_declared or imp in js_local:
+                    continue
+                risks.append({"name": imp, "ecosystem": "js",
+                              "reason": "imported but not declared in any package.json",
+                              "severity": "medium"})
+
+    # --- Python ecosystem ---
+    if not has_py:
+        ecosystems["python"] = "no python files"
+        return {"risks": risks, "ecosystems": ecosystems}
     declared, found_any = _parse_python_deps(root)
     if not found_any:
-        return {"risks": [], "note": "no requirements.txt / pyproject.toml found in tree"}
+        # Same honesty rule as js: a stdlib-only repo with no manifest has
+        # nothing to declare - report it checked, not unchecked.
+        stdlib = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
+        local = {os.path.basename(r)[:-3].lower() for _, r in files if r.endswith(".py")}
+        third_party = {i for i in _imported_python_modules(files)
+                       if i not in stdlib and i not in local}
+        if third_party:
+            ecosystems["python"] = "not checked: no requirements.txt / pyproject.toml found"
+        else:
+            ecosystems["python"] = "checked (stdlib-only imports, no manifest needed)"
+        return {"risks": risks, "ecosystems": ecosystems,
+                "note": "no requirements.txt / pyproject.toml found in tree"}
     if not declared:
-        return {"risks": [], "note": "deps file found but no dependencies parsed"}
+        ecosystems["python"] = "not checked: deps file found but no dependencies parsed"
+        return {"risks": risks, "ecosystems": ecosystems,
+                "note": "deps file found but no dependencies parsed"}
+    ecosystems["python"] = "checked"
     imported = _imported_python_modules(files)
 
     # Local module names = every .py file's stem anywhere in the repo. These are
@@ -724,16 +944,18 @@ def check_packages(root, files):
             continue
         if imp in declared_import_names or imp.replace("_", "-") in declared:
             continue
-        risks.append({"name": imp, "reason": "imported but not declared as a dependency",
+        risks.append({"name": imp, "ecosystem": "python",
+                      "reason": "imported but not declared as a dependency",
                       "severity": "medium"})
 
     # typosquat check on declared names
     for d in declared:
         for target, bads in TYPOSQUAT_TARGETS.items():
             if d in bads:
-                risks.append({"name": d, "reason": f"possible typosquat of '{target}'",
+                risks.append({"name": d, "ecosystem": "python",
+                              "reason": f"possible typosquat of '{target}'",
                               "severity": "high"})
-    return {"risks": risks}
+    return {"risks": risks, "ecosystems": ecosystems}
 
 
 def _scan_buzzwords(text):
@@ -1181,7 +1403,87 @@ def check_dead_code(files):
             unreferenced.append({"name": nm, "file": d["file"], "line": d["line"],
                                  "kind": d["kind"]})
 
-    return {"stubs": stubs, "unreferenced_definitions": unreferenced}
+    return {"stubs": stubs, "unreferenced_definitions": unreferenced,
+            "unreferenced_exports_js": _check_js_unreferenced_exports(files)}
+
+
+# Named value exports only (function/class/const/let/var); `export default` and
+# type-level exports (interface/type/enum) are excluded - types are routinely
+# consumed externally and flagging them would bury real orphans in noise.
+_JS_EXPORT_RE = re.compile(
+    r"^\s*export\s+(?!default\b)(?:declare\s+)?(?:abstract\s+)?"
+    r"(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)",
+    re.MULTILINE)
+_JS_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _check_js_unreferenced_exports(files):
+    """Grep-based orphan scanner for JS/TS, mirroring the Python check's intent
+    with honest imprecision: an export is flagged only when its name appears in
+    NO other js/ts file in the repo (word match, so barrel re-exports, tests,
+    and string references all count as referenced).
+
+    Precision guards (never flagged): test files, index/barrel files (public
+    API surface), .d.ts declarations, *.config.* files, and files under
+    examples/ (galleries export things nothing imports by design)."""
+    js = [(a, r) for a, r in files if os.path.splitext(r)[1] in _JS_EXT]
+    if not js:
+        return []
+
+    # Markup files (.mdx docs, .astro/.vue/.svelte templates, .html) consume JS
+    # exports without being js/ts themselves; their identifier mentions count as
+    # references so docs-site components are never flagged as orphans.
+    markup_tokens = set()
+    for abs_p, rel_p in files:
+        if os.path.splitext(rel_p)[1] in {".mdx", ".md", ".astro", ".vue", ".svelte", ".html"}:
+            m = _read(abs_p)
+            if m:
+                markup_tokens.update(_JS_IDENT_RE.findall(m))
+
+    # `export * from "./x"` re-exports every name in x without mentioning any of
+    # them, so word-matching can't see the reference. Any file whose stem is
+    # wildcard-re-exported anywhere is public API surface: never flag it.
+    wildcard_stems = set()
+    star_re = re.compile(r"""export\s+\*\s+(?:as\s+\w+\s+)?from\s+["']([^"']+)["']""")
+
+    tokens_by_file = {}   # rel_p -> set of identifiers appearing in the file
+    sources = []
+    for abs_p, rel_p in js:
+        src = _read(abs_p)
+        if src is None:
+            continue
+        tokens_by_file[rel_p] = set(_JS_IDENT_RE.findall(src))
+        for m in star_re.finditer(src):
+            stem = os.path.basename(m.group(1))
+            stem = re.sub(r"\.(js|jsx|ts|tsx|mjs|cjs|mts|cts)$", "", stem)
+            wildcard_stems.add(stem.lower())
+        sources.append((rel_p, src))
+
+    exports = []          # (name, rel_p, line)
+    for rel_p, src in sources:
+        rp = rel_p.replace("\\", "/")
+        base = os.path.basename(rp).lower()
+        stem = base.split(".")[0]
+        if (_is_test_file(rel_p) or _is_noncore_file(rel_p)
+                or base.endswith(".d.ts")
+                or stem == "index" or stem in wildcard_stems
+                or ".config." in base):
+            continue
+        for m in _JS_EXPORT_RE.finditer(src):
+            name = m.group(1)
+            if name.startswith("_"):
+                continue
+            line = src.count("\n", 0, m.start()) + 1
+            exports.append((name, rel_p, line))
+
+    orphans = []
+    for name, rel_p, line in exports:
+        if name in markup_tokens:
+            continue
+        if any(name in toks for f, toks in tokens_by_file.items() if f != rel_p):
+            continue
+        orphans.append({"name": name, "file": rel_p, "line": line})
+    return orphans
 
 
 # --- triage -----------------------------------------------------------------
@@ -1257,13 +1559,21 @@ def build_triage(report, files):
         supply_reasons.append(f"{len(undeclared)} undeclared import(s)")
     supply = "RISK" if supply_reasons else "CLEAN"
 
-    # --- Disposition (hard axes only) ---
+    # --- Disposition (hard axes only), with a one-line plain-language
+    # explanation so the output is readable without knowing the tool. ---
     if integrity == "FAIL" or typosquats:
         disposition = "DEEP_AUDIT_REQUIRED"
+        explanation = ("hard blocker: "
+                       + "; ".join(integrity_reasons
+                                   + ([f"{len(typosquats)} possible typosquat(s)"]
+                                      if typosquats else [])))
     elif undeclared:
         disposition = "STANDARD_TRIAGE"
+        explanation = (f"{len(undeclared)} undeclared import(s) to verify "
+                       "before adopting; no integrity failures")
     else:
         disposition = "FAST_TRACK"
+        explanation = "no integrity or supply-chain signals blocking review"
 
     # --- Observations (unbanded; informational) ---
     cov_pct, dup_unique, total_meaningful = _clone_coverage(report, files)
@@ -1305,12 +1615,22 @@ def build_triage(report, files):
             "note": "test files are often legitimately long (fixtures, "
                     "parametrized cases); weigh source giants more heavily.",
         },
+        "unreferenced_exports_js": {
+            "count": len(report["dead_code"].get("unreferenced_exports_js", [])),
+            "note": "grep-based orphan scanner for js/ts (no AST): an export is "
+                    "flagged only when its name appears in no other js/ts file. "
+                    "Index/barrel files, tests, examples, configs and .d.ts are "
+                    "never flagged. Coarser than the Python check by design; "
+                    "expect under-reporting, use a bundler/type-checker for "
+                    "true unused-export analysis.",
+        },
         "readme_hype_files": len(report["readme_hype"]),
         "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
     }
 
     return {
         "disposition": disposition,
+        "explanation": explanation,
         "axes": {
             "integrity": {"status": integrity, "reasons": integrity_reasons},
             "supply_chain": {"status": supply, "reasons": supply_reasons},
@@ -1361,6 +1681,7 @@ def run(root, only=None):
         "comment_buzzwords": report["comment_buzzwords"]["buzzword_count"],
         "giant_files": len(report["structural"]["giant_files"]),
         "unreferenced_definitions": len(report["dead_code"]["unreferenced_definitions"]),
+        "unreferenced_exports_js": len(report["dead_code"].get("unreferenced_exports_js", [])),
         "readme_hype_files": len(report["readme_hype"]),
     }
     report["summary"] = {
