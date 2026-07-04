@@ -79,17 +79,29 @@ type_cmd() {
 
 clear
 sleep 0.6
-echo "# vibe-check - a zero-dependency code scanner"
-echo "# point it at any repo, get one JSON report"
-sleep 1.2
+echo "# vibe-check - a zero-dependency scanner for AI-generated code debt"
+echo "# one file, stdlib only, offline. point it at any repo."
+sleep 1.4
 echo
 
-type_cmd "python vibe_check.py ./sample-project"
+# The money shot: human-readable summary + the triage verdict + a CI exit code,
+# all from one command. --fail-on hard makes the exit code the CI gate.
+type_cmd "python vibe_check.py ./sample-project --format summary --fail-on hard"
 sleep 0.3
-python vibe_check.py "$DEMO_DIR"
-sleep 2.0
+status=0
+python vibe_check.py ./sample-project --format summary --fail-on hard 2>/dev/null || status=$?
+sleep 1.2
 echo
-echo "# caught: a syntax error, a typosquat (requets),"
-echo "# an undeclared import (tensorflow), two cross-file duplicates,"
-echo "# and a README that reads like a press release."
-sleep 2.5
+type_cmd 'echo "exit code: $?"'
+echo "exit code: $status"
+sleep 1.5
+echo
+echo "# DEEP_AUDIT_REQUIRED: a file that doesn't parse, a typosquat (requets),"
+echo "# and an import missing from requirements.txt (tensorflow)."
+sleep 2.0
+echo "# exit 1 = this gates CI. two hard axes decide; everything else is"
+echo "# reported as observations with honest caveats, never fake scores."
+sleep 2.2
+echo
+echo "# machine formats when you want them: --format triage | prompt | json, --html"
+sleep 2.0
