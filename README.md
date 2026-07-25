@@ -116,6 +116,22 @@ python vibe_check.py /path/to/repo --out baseline.json
 python vibe_check.py /path/to/repo --baseline baseline.json --fail-on hard
 ```
 
+Or use the bundled GitHub Action — this repo doubles as a composite action,
+so one step gates your CI on the same scan:
+
+```yaml
+- uses: actions/checkout@v4
+- uses: holeyfield33-art/vibe-check@main
+  with:
+    fail-on: hard            # none | hard | supply-chain
+    # baseline: .vibe-check-baseline.json   # only fail on NEW findings
+    # html: vibe-report.html                # also write the dashboard
+```
+
+The action needs nothing but the `python3` already on every GitHub-hosted
+runner — no setup step, no dependencies, no network. It writes the JSON
+report (exposed as the `report` output) and prints the summary to the log.
+
 Version:
 
 ```
@@ -274,6 +290,23 @@ It will not tell you a package is abandoned or trending. That needs the network
 and is out of scope.
 - **It favors precision over recall.** Defaults are tuned to avoid crying wolf.
 It would rather miss a marginal case than bury a real one in noise.
+
+## Part of the Aletheia toolchain
+
+vibe-check is the fast-triage stage of a three-tool pipeline for proving that
+AI-built code works:
+
+1. [Aletheia portfolio auditor](https://github.com/holeyfield33-art/Aletheia-portfolio-auditor)
+   — scans your whole GitHub account and tells you *which repos need attention*.
+2. **vibe-check** (this repo) — tells you *what's wrong with a repo*, free and
+   offline, ending in the triage disposition.
+3. [The Lie Detector](https://github.com/holeyfield33-art/Lie-Detector) —
+   executes your README's claims in a sandbox and tells you *whether the repo
+   does what it says*, ending in a receipt-backed truth badge. A `FAST_TRACK`
+   disposition here is the natural signal that a repo is ready for that deeper
+   (LLM-powered) verification.
+
+Each tool works standalone; together they go discover → triage → verify → badge.
 
 ## License
 

@@ -1,0 +1,62 @@
+name: "vibe-check"
+description: >-
+  Flag the signals of AI-generated or rushed code: syntax errors, undeclared
+  imports, typosquat lookalikes, duplicate blocks, dead code. Offline,
+  deterministic, Python stdlib only.
+author: "holeyfield33-art"
+branding:
+  icon: "search"
+  color: "purple"
+
+inputs:
+  path:
+    description: "Directory to scan, relative to the workspace."
+    required: false
+    default: "."
+  fail-on:
+    description: "Fail the build on findings: none, hard, or supply-chain."
+    required: false
+    default: "hard"
+  baseline:
+    description: >-
+      Path to a stored baseline report JSON; only findings new since the
+      baseline are reported (gate on new debt, not all debt).
+    required: false
+    default: ""
+  report:
+    description: "Path to write the JSON report."
+    required: false
+    default: "vibe-check-report.json"
+  html:
+    description: "Optional path to also write the self-contained HTML dashboard."
+    required: false
+    default: ""
+
+outputs:
+  report:
+    description: "Path to the JSON report written by the scan."
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: scan
+      shell: bash
+      env:
+        VC_PATH: ${{ inputs.path }}
+        VC_FAIL_ON: ${{ inputs.fail-on }}
+        VC_BASELINE: ${{ inputs.baseline }}
+        VC_REPORT: ${{ inputs.report }}
+        VC_HTML: ${{ inputs.html }}
+      run: |
+        set -euo pipefail
+        args=("$GITHUB_ACTION_PATH/vibe_check.py" "$VC_PATH"
+              --out "$VC_REPORT" --format summary --fail-on "$VC_FAIL_ON")
+        if [ -n "$VC_BASELINE" ]; then
+          args+=(--baseline "$VC_BASELINE")
+        fi
+        if [ -n "$VC_HTML" ]; then
+          args+=(--html "$VC_HTML")
+        fi
+        python3 "${args[@]}"
+        echo "report=$VC_REPORT" >> "$GITHUB_OUTPUT"
