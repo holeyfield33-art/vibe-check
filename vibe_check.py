@@ -599,9 +599,19 @@ def _parse_python_deps(root):
                         declared.add(name.lower())
         if "pyproject.toml" in filenames:
             found_any = True
-            # naive grep for quoted deps; avoids a toml parser dependency
-            for m in re.finditer(r'["\']([A-Za-z0-9_.\-]+)\s*[=<>~!\[]',
-                                 _read(os.path.join(dirpath, "pyproject.toml")) or ""):
+            content = _read(os.path.join(dirpath, "pyproject.toml")) or ""
+            # Versioned/extras entries: "name>=1.0", "name[extra]", "name~=2".
+            for m in re.finditer(r'["\']([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*[=<>~!\[]', content):
+                declared.add(m.group(1).lower())
+            # Bare, unversioned entries: "name", immediately followed by the
+            # list separator or closer (`,` / `]`) rather than an operator -
+            # the pattern above alone misses these (e.g. `"requests-cache",`
+            # with no version pin at all), silently dropping them from
+            # `declared` and causing a real, correctly-declared dependency to
+            # be flagged as undeclared. Scoped to end-of-token so it doesn't
+            # sweep up unrelated quoted strings (descriptions, license text)
+            # that aren't followed by a list separator.
+            for m in re.finditer(r'["\']([A-Za-z0-9][A-Za-z0-9_.\-]*)["\']\s*[,\]]', content):
                 declared.add(m.group(1).lower())
     return declared, found_any
 
@@ -932,9 +942,13 @@ def check_packages(root, files):
                 local_mods.add(parts[-2].lower())  # package dir name
 
     # Known name<->import aliases so we don't false-positive on legit installs.
+    # Each entry found via real-repo benchmarking, not guessed - these are the
+    # standard, documented import name for that PyPI package.
     alias = {"beautifulsoup4": "bs4", "pillow": "pil", "scikit-learn": "sklearn",
              "python-dateutil": "dateutil", "pyyaml": "yaml", "argon2-cffi": "argon2",
-             "psycopg2-binary": "psycopg2", "python-jose": "jose"}
+             "psycopg2-binary": "psycopg2", "python-jose": "jose",
+             "python-dotenv": "dotenv", "pygithub": "github", "pyjwt": "jwt",
+             "alpaca-py": "alpaca"}
     declared_import_names = {alias.get(d, d.replace("-", "_")) for d in declared}
     stdlib_guess = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
 

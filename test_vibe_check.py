@@ -487,6 +487,89 @@ class TestDocsFileExclusion(unittest.TestCase):
             self.assertIn("mystery_package", risk_names)
 
 
+class TestPyprojectBareDeps(unittest.TestCase):
+    """Regression from live-repo benchmarking: pyproject.toml dependencies with
+    no version specifier (e.g. `"requests-cache",` with no pin at all) were
+    silently dropped from the declared set, because the parsing regex required
+    a trailing operator character. A correctly-declared, unpinned dependency
+    was then flagged as undeclared - a false positive on perfectly normal
+    pyproject.toml style."""
+
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_bare_dependency_in_main_list_not_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "pyproject.toml"),
+                        '[project]\ndependencies = [\n    "PyGithub>=2.0",\n'
+                        '    "requests-cache",\n    "markdown",\n]\n')
+            self._write(os.path.join(d, "app.py"),
+                        "import requests_cache\nimport markdown\nimport github\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertNotIn("requests_cache", risk_names)
+            self.assertNotIn("markdown", risk_names)
+            self.assertNotIn("github", risk_names)
+
+    def test_bare_dependency_in_optional_table_not_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "pyproject.toml"),
+                        '[project.optional-dependencies]\ndev = [\n    "pytest",\n]\n')
+            self._write(os.path.join(d, "app.py"), "import pytest\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertNotIn("pytest", risk_names)
+
+    def test_unrelated_quoted_strings_not_swept_in(self):
+        # description/readme/license text must not be parsed as dependencies -
+        # this would silently suppress a genuinely undeclared import of the
+        # same name, which is worse than the bug being fixed.
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "pyproject.toml"),
+                        '[project]\nname = "myapp"\n'
+                        'description = "Scan and analyze things"\n'
+                        'readme = "README.md"\ndependencies = ["requests"]\n')
+            self._write(os.path.join(d, "app.py"),
+                        "import requests\nimport scan\n")
+            report = vc.run(d)
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertIn("scan", risk_names)
+
+
+class TestImportNameAliases(unittest.TestCase):
+    """Regression from live-repo benchmarking: these PyPI packages' import name
+    differs from the declared name in a way the alias table didn't cover yet,
+    so a correctly-declared dependency was flagged as undeclared."""
+
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def _check(self, declared_line, import_line):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"), declared_line + "\n")
+            self._write(os.path.join(d, "app.py"), import_line + "\n")
+            report = vc.run(d)
+            return {r["name"] for r in report["package_risks"].get("risks", [])}
+
+    def test_python_dotenv_aliases_to_dotenv(self):
+        self.assertEqual(self._check("python-dotenv==1.0.1", "import dotenv"), set())
+
+    def test_pygithub_aliases_to_github(self):
+        self.assertEqual(self._check("PyGithub>=2.0", "import github"), set())
+
+    def test_pyjwt_aliases_to_jwt(self):
+        self.assertEqual(self._check("PyJWT>=2.8.0", "import jwt"), set())
+
+    def test_alpaca_py_aliases_to_alpaca(self):
+        self.assertEqual(self._check("alpaca-py==0.37.0", "import alpaca"), set())
+
+
 class TestVersion(unittest.TestCase):
     def test_version_string_exists(self):
         self.assertTrue(hasattr(vc, "__version__"))
