@@ -18,6 +18,10 @@ JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-langua
 ### Changed
 - Imports in `examples/`, `bench/`, `fixtures/`, `__mocks__/`, and `playground/` directories are no longer treated as production dependencies (both ecosystems), matching the existing tests/docs exclusions. Validated against click, requests-era fixtures, zod, and vercel/ai.
 
+### Fixed
+- **`package_risks`: unversioned `pyproject.toml` dependencies were silently dropped.** The parser required a trailing version operator (`>=`, `[`, etc.), so a bare entry like `"requests-cache",` with no pin at all never entered the declared set — then got flagged as undeclared even though it was correctly declared. Found via a 37-repo real-world benchmark. Now matched by a second, narrowly-scoped pattern (quoted token immediately followed by `,` or `]`) that doesn't sweep up unrelated strings like `description` or `license` values.
+- **`package_risks`: missing Python import-name aliases.** Added `python-dotenv`→`dotenv`, `PyGithub`→`github`, `PyJWT`→`jwt`, `alpaca-py`→`alpaca` to the existing alias table — same class of mismatch as `beautifulsoup4`→`bs4`, just not covered yet. Also found via the same benchmark.
+
 ---
 
 ## [1.0.0] — 2026-07-04
