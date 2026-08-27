@@ -570,6 +570,40 @@ class TestImportNameAliases(unittest.TestCase):
         self.assertEqual(self._check("alpaca-py==0.37.0", "import alpaca"), set())
 
 
+class TestEmptyManifestHonesty(unittest.TestCase):
+    """Regression: a comment-only/empty requirements.txt (e.g. vibe-check's own
+    "# Standard library only ...") was treated as a real manifest that was
+    found but yielded no dependencies, reporting the misleading
+    "not checked: deps file found but no dependencies parsed". It should be
+    treated identically to having no manifest at all."""
+
+    @staticmethod
+    def _write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_comment_only_requirements_stdlib_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"),
+                        "# Standard library only - no pip packages required.\n")
+            self._write(os.path.join(d, "app.py"), "import os\nimport json\n")
+            report = vc.run(d)
+            self.assertEqual(report["package_risks"]["ecosystems"]["python"],
+                              "checked (stdlib-only imports, no manifest needed)")
+
+    def test_comment_only_requirements_with_third_party_import(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(os.path.join(d, "requirements.txt"),
+                        "# Standard library only - no pip packages required.\n")
+            self._write(os.path.join(d, "app.py"), "import requests\n")
+            report = vc.run(d)
+            self.assertEqual(report["package_risks"]["ecosystems"]["python"],
+                              "not checked: no requirements.txt / pyproject.toml found")
+            risk_names = {r["name"] for r in report["package_risks"].get("risks", [])}
+            self.assertEqual(risk_names, set())
+
+
 class TestVersion(unittest.TestCase):
     def test_version_string_exists(self):
         self.assertTrue(hasattr(vc, "__version__"))

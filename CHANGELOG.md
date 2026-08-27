@@ -21,6 +21,11 @@ JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-langua
 ### Fixed
 - **`package_risks`: unversioned `pyproject.toml` dependencies were silently dropped.** The parser required a trailing version operator (`>=`, `[`, etc.), so a bare entry like `"requests-cache",` with no pin at all never entered the declared set — then got flagged as undeclared even though it was correctly declared. Found via a 37-repo real-world benchmark. Now matched by a second, narrowly-scoped pattern (quoted token immediately followed by `,` or `]`) that doesn't sweep up unrelated strings like `description` or `license` values.
 - **`package_risks`: missing Python import-name aliases.** Added `python-dotenv`→`dotenv`, `PyGithub`→`github`, `PyJWT`→`jwt`, `alpaca-py`→`alpaca` to the existing alias table — same class of mismatch as `beautifulsoup4`→`bs4`, just not covered yet. Also found via the same benchmark.
+- **`package_risks`: an empty/comment-only `requirements.txt` or `pyproject.toml` reported "not checked" on itself.** `found_any` was set as soon as the manifest file was found on disk, not when it actually contained a parseable dependency — vibe-check's own comment-only `requirements.txt` tripped this, reporting `not checked: deps file found but no dependencies parsed` instead of the correct `checked (stdlib-only imports, no manifest needed)`. `found_any` now only flips true when a dependency name is actually parsed, so an empty manifest is treated the same as no manifest.
+
+### Added
+- **`action.yml`: `disposition` output.** Exposes the triage disposition (`FAST_TRACK` / `STANDARD_TRIAGE` / `DEEP_AUDIT_REQUIRED`) as a step output so a consuming workflow can branch on it directly instead of parsing the JSON report.
+- **`action.yml`: falls back to `python` when `python3` is unavailable**, for self-hosted runners without a `python3` alias.
 
 ---
 

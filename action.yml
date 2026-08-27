@@ -36,6 +36,9 @@ outputs:
   report:
     description: "Path to the JSON report written by the scan."
     value: ${{ steps.scan.outputs.report }}
+  disposition:
+    description: "Triage disposition: FAST_TRACK, STANDARD_TRIAGE, or DEEP_AUDIT_REQUIRED."
+    value: ${{ steps.scan.outputs.disposition }}
 
 runs:
   using: "composite"
@@ -50,6 +53,7 @@ runs:
         VC_HTML: ${{ inputs.html }}
       run: |
         set -euo pipefail
+        PYTHON_BIN="$(command -v python3 || command -v python)"
         args=("$GITHUB_ACTION_PATH/vibe_check.py" "$VC_PATH"
               --out "$VC_REPORT" --format summary --fail-on "$VC_FAIL_ON")
         if [ -n "$VC_BASELINE" ]; then
@@ -58,5 +62,7 @@ runs:
         if [ -n "$VC_HTML" ]; then
           args+=(--html "$VC_HTML")
         fi
-        python3 "${args[@]}"
+        "$PYTHON_BIN" "${args[@]}"
         echo "report=$VC_REPORT" >> "$GITHUB_OUTPUT"
+        disposition="$("$PYTHON_BIN" -c "import json,sys; print(json.load(open(sys.argv[1]))['triage']['disposition'])" "$VC_REPORT")"
+        echo "disposition=$disposition" >> "$GITHUB_OUTPUT"
