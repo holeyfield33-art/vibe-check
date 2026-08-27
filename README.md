@@ -220,7 +220,7 @@ Embed template (replace YOUR_CAST_ID):
 
 ## Tests
 
-The suite is 46 tests, stdlib `unittest`, zero test dependencies — the same
+The suite is 65 tests, stdlib `unittest`, zero test dependencies — the same
 rule the tool lives by:
 
 ```

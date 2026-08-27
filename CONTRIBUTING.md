@@ -51,7 +51,7 @@ on idiomatic code will not be merged.
 python test_vibe_check.py
 ```
 
-No setup required. The test suite is stdlib-only and runs offline. All 42 tests should pass.
+No setup required. The test suite is stdlib-only and runs offline. All 65 tests should pass.
 
 ## PR checklist
 

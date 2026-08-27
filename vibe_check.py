@@ -590,19 +590,19 @@ def _parse_python_deps(root):
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         if "requirements.txt" in filenames:
-            found_any = True
             for ln in (_read(os.path.join(dirpath, "requirements.txt")) or "").splitlines():
                 ln = ln.strip()
                 if ln and not ln.startswith("#"):
                     name = re.split(r"[=<>!~\[ ]", ln, 1)[0].strip()
                     if name:
                         declared.add(name.lower())
+                        found_any = True
         if "pyproject.toml" in filenames:
-            found_any = True
             content = _read(os.path.join(dirpath, "pyproject.toml")) or ""
             # Versioned/extras entries: "name>=1.0", "name[extra]", "name~=2".
             for m in re.finditer(r'["\']([A-Za-z0-9][A-Za-z0-9_.\-]*)\s*[=<>~!\[]', content):
                 declared.add(m.group(1).lower())
+                found_any = True
             # Bare, unversioned entries: "name", immediately followed by the
             # list separator or closer (`,` / `]`) rather than an operator -
             # the pattern above alone misses these (e.g. `"requests-cache",`
@@ -613,6 +613,10 @@ def _parse_python_deps(root):
             # that aren't followed by a list separator.
             for m in re.finditer(r'["\']([A-Za-z0-9][A-Za-z0-9_.\-]*)["\']\s*[,\]]', content):
                 declared.add(m.group(1).lower())
+                found_any = True
+    # found_any is true only when a real dependency was parsed, not merely
+    # when a manifest file exists - a comment-only/empty manifest is then
+    # treated identically to "no manifest" by the caller (nothing to check).
     return declared, found_any
 
 
