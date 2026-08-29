@@ -40,22 +40,37 @@
 
   function renderObservations(report) {
     const obs = report.triage.observations || {};
+    const deadCode = report.dead_code || {};
+    const structural = report.structural || {};
+    const syntax = report.syntax || {};
+    const packageRisks = report.package_risks || {};
     const sections = [
-      ["duplication", "Duplication", obs.duplication],
-      ["stubs", "Stubs", obs.stubs],
-      ["unreferenced_definitions", "Dead Code", obs.unreferenced_definitions],
-      ["giant_files", "Structural", obs.giant_files],
-      ["circular_imports", "Circular Imports", obs.circular_imports],
-      ["comment_buzzwords", "Comment Buzzwords", obs.comment_buzzwords],
-      ["readme_hype_files", "Readme Hype", obs.readme_hype_files],
-      ["unreferenced_exports_js", "JS/TS Exports", obs.unreferenced_exports_js],
+      ["duplication", "Duplication", obs.duplication, report.duplicates],
+      ["stubs", "Stubs", obs.stubs, deadCode.stubs],
+      ["unreferenced_definitions", "Dead Code", obs.unreferenced_definitions, deadCode.unreferenced_definitions],
+      ["giant_files", "Structural", obs.giant_files, structural.giant_files],
+      ["circular_imports", "Circular Imports", obs.circular_imports, structural.circular_imports],
+      ["comment_buzzwords", "Comment Buzzwords", obs.comment_buzzwords, [syntax, report.comment_buzzwords]],
+      ["readme_hype_files", "Readme Hype", obs.readme_hype_files, report.readme_hype],
+      ["unreferenced_exports_js", "JS/TS Exports", obs.unreferenced_exports_js, deadCode.unreferenced_exports_js],
+      ["package_risks", "Package Risks", report.summary?.hard_signals?.package_risks || 0, packageRisks.risks],
     ];
-    return sections.map(([key, label, value]) => {
+    return sections.map(([key, label, value, raw]) => {
       const count = typeof value === "number" ? value : (value && value.count) || 0;
+      const rawItems = Array.isArray(raw) ? raw : [];
       const details = value && typeof value === "object" && !Array.isArray(value)
-        ? Object.entries(value).filter(([k]) => k !== "count" && k !== "note").map(([k, v]) => `<div><strong>${esc(k)}</strong>: ${esc(Array.isArray(v) ? v.join(", ") : JSON.stringify(v))}</div>`).join("")
+        ? Object.entries(value)
+            .filter(([k]) => k !== "count" && k !== "note")
+            .map(([k, v]) => `<div><strong>${esc(k)}</strong>: ${esc(Array.isArray(v) ? v.join(", ") : JSON.stringify(v))}</div>`)
+            .join("")
         : "";
-      return `<details><summary>${esc(label)} <span>(${count})</span></summary><div class="finding">${details || "No additional details."}</div></details>`;
+      const rawDetails = rawItems.length
+        ? rawItems.map((item) => `<div>${esc(JSON.stringify(item))}</div>`).join("")
+        : "";
+      const note = value && typeof value === "object" && !Array.isArray(value) && value.note
+        ? `<div class="note">${esc(value.note)}</div>`
+        : "";
+      return `<details><summary>${esc(label)} <span>(${count})</span></summary><div class="finding">${details || rawDetails || "No additional details."}${note}</div></details>`;
     }).join("");
   }
 
@@ -93,6 +108,7 @@
   async function loadDemo(key) {
     const res = await fetch(reportFiles[key], { cache: "no-store" });
     const report = await res.json();
+    if (state.active !== key) return;
     state.report = report;
     render(report);
   }
