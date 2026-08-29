@@ -121,11 +121,16 @@ so one step gates your CI on the same scan:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: holeyfield33-art/vibe-check@main
+- uses: holeyfield33-art/vibe-check@v1
   with:
     fail-on: hard            # none | hard | supply-chain
     # baseline: .vibe-check-baseline.json   # only fail on NEW findings
     # html: vibe-report.html                # also write the dashboard
+
+# Pinning options for your security posture:
+#   uses: holeyfield33-art/vibe-check@v1         <- Recommended (tracks compatible v1 releases)
+#   uses: holeyfield33-art/vibe-check@v1.1.0     <- Exact release (pin to a specific version)
+#   uses: holeyfield33-art/vibe-check@[COMMIT]   <- Maximum reproducibility (immutable commit reference)
 ```
 
 The action needs nothing but the `python3` already on every GitHub-hosted
