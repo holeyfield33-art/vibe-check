@@ -5,7 +5,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [1.1.0] — 2026-07-04
+## [1.1.0] — 2026-08-28
 
 JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-language repos.
 

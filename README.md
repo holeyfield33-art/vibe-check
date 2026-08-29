@@ -58,7 +58,7 @@ finding are provable defects rather than judgment calls:
 - **Integrity** — syntax errors only. A file that does not parse is broken,
   full stop.
 - **Supply chain** — typosquatted dependency names and imports missing from
-  your declared dependencies. Concrete, actionable, zero-ambiguity.
+  your declared dependencies. Concrete and actionable enough to warrant verification.
 
 Both clean → `FAST_TRACK`. One axis raised → `STANDARD_TRIAGE`. Integrity
 failed or both raised → `DEEP_AUDIT_REQUIRED`.
