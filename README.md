@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/vibe-check-logo.png" alt="Vibe Check Code Scanner" width="300">
+</p>
+
 # vibe-check
 
 [![CI](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml/badge.svg)](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml)
