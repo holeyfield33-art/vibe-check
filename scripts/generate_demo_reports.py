@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
+import tempfile
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
-import os
-import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]

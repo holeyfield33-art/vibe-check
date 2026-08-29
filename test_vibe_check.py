@@ -34,6 +34,16 @@ def _make_report(hard=None, soft=None, **detail):
     return report
 
 
+def _normalize_report_paths(value):
+    if isinstance(value, dict):
+        return {k: _normalize_report_paths(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_report_paths(v) for v in value]
+    if isinstance(value, str):
+        return value.replace("\\", "/")
+    return value
+
+
 class TestLLMPrompt(unittest.TestCase):
     def test_clean_report(self):
         prompt = vc._generate_llm_prompt(_make_report())
@@ -905,9 +915,9 @@ class TestDemoReportDrift(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
             for name in ("clean", "messy", "supply-chain"):
                 with open(os.path.join(tmp, "demo", f"{name}.json"), encoding="utf-8") as fh:
-                    generated = json.loads(fh.read())
+                    generated = _normalize_report_paths(json.loads(fh.read()))
                 with open(os.path.join(repo, "demo", f"{name}.json"), encoding="utf-8") as fh:
-                    committed = json.loads(fh.read())
+                    committed = _normalize_report_paths(json.loads(fh.read()))
                 self.assertEqual(
                     generated,
                     committed,
