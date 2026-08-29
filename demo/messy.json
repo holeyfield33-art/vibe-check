@@ -1,0 +1,144 @@
+{
+  "comment_buzzwords": {
+    "buzzword_count": 0,
+    "top_buzzwords": {},
+    "total_comment_lines": 0
+  },
+  "dead_code": {
+    "stubs": [],
+    "unreferenced_definitions": [
+      {
+        "file": "app.py",
+        "kind": "function",
+        "line": 3,
+        "name": "alpha"
+      },
+      {
+        "file": "app.py",
+        "kind": "function",
+        "line": 6,
+        "name": "beta"
+      },
+      {
+        "file": "app.py",
+        "kind": "class",
+        "line": 9,
+        "name": "Stubbed"
+      },
+      {
+        "file": "dup.py",
+        "kind": "function",
+        "line": 1,
+        "name": "alpha"
+      },
+      {
+        "file": "dup.py",
+        "kind": "function",
+        "line": 4,
+        "name": "beta"
+      }
+    ],
+    "unreferenced_exports_js": []
+  },
+  "demo": {
+    "generated_from": "vibe_check.py",
+    "scanner_sha": "96d882ddca6df2b2b0f388c0928149a572e15dfa",
+    "source_fixture": "fixtures/demo-messy/",
+    "title": "Messy Example"
+  },
+  "duplicates": [],
+  "files_scanned": 2,
+  "package_risks": {
+    "ecosystems": {
+      "js": "no js/ts files",
+      "python": "checked (stdlib-only imports, no manifest needed)"
+    },
+    "note": "no requirements.txt / pyproject.toml found in tree",
+    "risks": []
+  },
+  "readme_hype": [],
+  "repo": "fixtures/demo-messy",
+  "scoped_to_files": null,
+  "structural": {
+    "circular_imports": [],
+    "deep_nesting": [],
+    "giant_files": []
+  },
+  "summary": {
+    "circular_imports": 0,
+    "comment_buzzwords": 0,
+    "duplicate_blocks": 0,
+    "giant_files": 0,
+    "hard_signals": {
+      "circular_imports": 0,
+      "duplicate_blocks": 0,
+      "package_risks": 0,
+      "stubs": 0,
+      "syntax_errors": 0
+    },
+    "package_risks": 0,
+    "readme_hype_files": 0,
+    "soft_signals": {
+      "comment_buzzwords": 0,
+      "giant_files": 0,
+      "readme_hype_files": 0,
+      "unreferenced_definitions": 5,
+      "unreferenced_exports_js": 0
+    },
+    "stubs": 0,
+    "syntax_errors": 0,
+    "unreferenced_definitions": 5
+  },
+  "syntax": {
+    "errors": [],
+    "skipped_non_python_extensions": []
+  },
+  "triage": {
+    "axes": {
+      "integrity": {
+        "reasons": [],
+        "status": "PASS"
+      },
+      "supply_chain": {
+        "reasons": [],
+        "status": "CLEAN"
+      }
+    },
+    "disposition": "FAST_TRACK",
+    "explanation": "no integrity or supply-chain signals blocking review",
+    "note": "Review-priority triage. Two hard axes (Integrity, Supply Chain) gate the disposition; observations are unbanded facts for a human or LLM to interpret. Not a quality/trust/AI-likelihood score.",
+    "observations": {
+      "circular_imports": {
+        "count": 0,
+        "cycles": [],
+        "note": "reported, not gated: cycles labelled 'deferred_late_import' use the deliberate late-binding pattern and are usually safe; 'top_level' cycles are worth a manual check."
+      },
+      "comment_buzzwords": 0,
+      "duplication": {
+        "clone_coverage_percent": 0.0,
+        "duplicate_blocks": 0,
+        "duplicated_lines": 0,
+        "note": "duplication tracks library architecture (API surface) as much as debt; interpret in context, not as a defect."
+      },
+      "giant_files": {
+        "count": 0,
+        "note": "test files are often legitimately long (fixtures, parametrized cases); weigh source giants more heavily.",
+        "source": 0,
+        "test": 0
+      },
+      "readme_hype_files": 0,
+      "stubs": {
+        "count": 0,
+        "note": "may be intentional scaffolding for a future phase; documented so a reviewer can confirm they are planned, not abandoned."
+      },
+      "unreferenced_definitions": {
+        "count": 5,
+        "note": "orphan scanner, not full dead-code analysis: any imported name counts as referenced, so an imported-but-never-called function is NOT flagged. It catches only definitions nothing imports at all. Expect under-reporting on well-wired apps; use a type-checker for true unused-export analysis."
+      },
+      "unreferenced_exports_js": {
+        "count": 0,
+        "note": "grep-based orphan scanner for js/ts (no AST): an export is flagged only when its name appears in no other js/ts file. Index/barrel files, tests, examples, configs and .d.ts are never flagged. Coarser than the Python check by design; expect under-reporting, use a bundler/type-checker for true unused-export analysis."
+      }
+    }
+  }
+}
