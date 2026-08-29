@@ -1,8 +1,5 @@
-name: "vibe-check"
-description: >-
-  Flag the signals of AI-generated or rushed code: syntax errors, undeclared
-  imports, typosquat lookalikes, duplicate blocks, dead code. Offline,
-  deterministic, Python stdlib only.
+name: "Vibe Check Code Scanner"
+description: "Offline code scanner for syntax errors, undeclared imports, typosquats, duplicates, and dead code."
 author: "holeyfield33-art"
 branding:
   icon: "search"
