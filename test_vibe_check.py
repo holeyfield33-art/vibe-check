@@ -1,6 +1,9 @@
 """Smoke tests for vibe-check Phase 2 helpers (stdlib only, no third-party deps)."""
 
 import os
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -29,6 +32,20 @@ def _make_report(hard=None, soft=None, **detail):
     }
     report.update(detail)
     return report
+
+
+def _normalize_report_paths(value):
+    if isinstance(value, dict):
+        return {k: _normalize_report_paths(v) for k, v in value.items()}
+    if isinstance(value, list):
+        normalized = [_normalize_report_paths(v) for v in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True) if isinstance(item, (dict, list)) else str(item),
+        )
+    if isinstance(value, str):
+        return value.replace("\\", "/")
+    return value
 
 
 class TestLLMPrompt(unittest.TestCase):
@@ -884,6 +901,32 @@ class TestDispositionExplanation(unittest.TestCase):
             r = vc.run(d)
             self.assertEqual(r["triage"]["disposition"], "DEEP_AUDIT_REQUIRED")
             self.assertIn("syntax error", r["triage"]["explanation"])
+
+
+class TestDemoReportDrift(unittest.TestCase):
+    def test_demo_reports_match_generator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["VIBE_CHECK_DEMO_OUTDIR"] = tmp
+            repo = os.path.dirname(__file__) or "."
+            proc = subprocess.run(
+                [sys.executable, os.path.join(repo, "scripts", "generate_demo_reports.py")],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            for name in ("clean", "messy", "supply-chain"):
+                with open(os.path.join(tmp, "demo", f"{name}.json"), encoding="utf-8") as fh:
+                    generated = _normalize_report_paths(json.loads(fh.read()))
+                with open(os.path.join(repo, "demo", f"{name}.json"), encoding="utf-8") as fh:
+                    committed = _normalize_report_paths(json.loads(fh.read()))
+                self.assertEqual(
+                    generated,
+                    committed,
+                    "Demo report drift detected.\nRun: python scripts/generate_demo_reports.py",
+                )
 
 
 if __name__ == "__main__":
