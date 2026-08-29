@@ -9,6 +9,12 @@
     "unreferenced_definitions": [
       {
         "file": "app.py",
+        "kind": "class",
+        "line": 9,
+        "name": "Stubbed"
+      },
+      {
+        "file": "app.py",
         "kind": "function",
         "line": 3,
         "name": "alpha"
@@ -18,12 +24,6 @@
         "kind": "function",
         "line": 6,
         "name": "beta"
-      },
-      {
-        "file": "app.py",
-        "kind": "class",
-        "line": 9,
-        "name": "Stubbed"
       },
       {
         "file": "dup.py",

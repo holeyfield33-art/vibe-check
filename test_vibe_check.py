@@ -38,7 +38,11 @@ def _normalize_report_paths(value):
     if isinstance(value, dict):
         return {k: _normalize_report_paths(v) for k, v in value.items()}
     if isinstance(value, list):
-        return [_normalize_report_paths(v) for v in value]
+        normalized = [_normalize_report_paths(v) for v in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True) if isinstance(item, (dict, list)) else str(item),
+        )
     if isinstance(value, str):
         return value.replace("\\", "/")
     return value

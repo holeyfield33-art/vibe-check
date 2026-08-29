@@ -51,6 +51,42 @@ def build_supply_chain_fixture(tmpdir: Path) -> Path:
     return target
 
 
+def normalize_report(report: dict) -> dict:
+    def sort_key(item):
+        if isinstance(item, dict):
+            return json.dumps(item, sort_keys=True)
+        return str(item)
+
+    normalized = dict(report)
+    normalized["repo"] = str(normalized.get("repo", "")).replace("\\", "/")
+    if "duplicates" in normalized and isinstance(normalized["duplicates"], list):
+        normalized["duplicates"] = sorted(normalized["duplicates"], key=sort_key)
+    if "package_risks" in normalized:
+        package_risks = dict(normalized["package_risks"])
+        if isinstance(package_risks.get("risks"), list):
+            package_risks["risks"] = sorted(package_risks["risks"], key=sort_key)
+        normalized["package_risks"] = package_risks
+    if "dead_code" in normalized:
+        dead_code = dict(normalized["dead_code"])
+        for key in ("stubs", "unreferenced_definitions", "unreferenced_exports_js"):
+            if isinstance(dead_code.get(key), list):
+                dead_code[key] = sorted(dead_code[key], key=sort_key)
+        normalized["dead_code"] = dead_code
+    if "structural" in normalized:
+        structural = dict(normalized["structural"])
+        for key in ("giant_files", "deep_nesting", "circular_imports"):
+            if isinstance(structural.get(key), list):
+                structural[key] = sorted(structural[key], key=sort_key)
+        normalized["structural"] = structural
+    if "syntax" in normalized and isinstance(normalized["syntax"], dict):
+        syntax = dict(normalized["syntax"])
+        for key in ("errors", "skipped_non_python_extensions"):
+            if isinstance(syntax.get(key), list):
+                syntax[key] = sorted(syntax[key], key=sort_key)
+        normalized["syntax"] = syntax
+    return normalized
+
+
 def main() -> int:
     out_dir = Path(os.environ.get("VIBE_CHECK_DEMO_OUTDIR", ROOT))
     for key, fixture in FIXTURES.items():
@@ -80,6 +116,7 @@ def main() -> int:
             "generated_from": "vibe_check.py",
             "scanner_sha": "96d882ddca6df2b2b0f388c0928149a572e15dfa",
         }
+        report = normalize_report(report)
         out_path = out_dir / OUTPUTS[key].relative_to(ROOT)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
