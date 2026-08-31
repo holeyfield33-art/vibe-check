@@ -11,7 +11,10 @@ inputs:
     required: false
     default: "."
   fail-on:
-    description: "Fail the build on findings: none, hard, or supply-chain."
+    description: >-
+      Fail the build: none (always pass), hard (syntax errors or package risks only —
+      same axes as triage disposition; duplicates/stubs/cycles are reported but do not
+      fail), or supply-chain (package risks only).
     required: false
     default: "hard"
   baseline:
