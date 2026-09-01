@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.3] — 2026-09-01
+
+### Fixed
+- **`--fail-on hard` now matches triage axes.** Exit 1 only when `syntax_errors` or
+  `package_risks` are present. `duplicate_blocks`, stubs, and circular imports remain
+  in the summary for visibility but no longer fail the build (they are observations;
+  API-surface clones are not defects). Tags `v1.1.1` / `v1.1.2` claimed this fix but
+  only updated `action.yml` / messages — the Python gate was unchanged until 1.1.3.
+- Regression tests: duplicates alone + `FAST_TRACK` → exit 0; syntax error → exit 1.
+
+### Changed
+- Summary hard-signal section labeled `(gate: syntax+pkg)`.
+- `--fail-on` help text documents the triage-aligned hard gate.
+
+---
+
 ## [1.1.0] — 2026-08-28
 
 JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-language repos.
