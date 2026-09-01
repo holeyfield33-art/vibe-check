@@ -5,6 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.3] — 2026-09-01
+
+Real `--fail-on hard` CI gate fix aligned to triage hard axes.
+
+### Fixed
+- **`--fail-on hard` now gates only Integrity + Supply Chain hard axes** (`syntax_errors` + `package_risks`). Duplicate blocks, stubs, and circular imports remain visible in `hard_signals` but no longer fail CI by themselves, matching triage disposition behavior.
+- **Corrected release claim from tags `v1.1.1` and `v1.1.2`.** Those tags updated action/messages but did not change the Python gate logic in `vibe_check.py`; `v1.1.3` is the first version with the actual runtime gate fix.
+
+---
+
 ## [1.1.0] — 2026-08-28
 
 JS/TS supply-chain and dead-export coverage, plus honesty fixes for mixed-language repos.

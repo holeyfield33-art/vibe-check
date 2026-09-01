@@ -23,7 +23,7 @@ Horos integration (optional): pass the `selection[].path` list from a Horos
 receipt to --files and vibe-check only scans the slice Horos chose.
 """
 
-__version__ = "1.1.0"
+__version__ = "1.1.3"
 
 import argparse
 import ast
@@ -317,7 +317,7 @@ def _generate_summary_text(report):
         f"  {'Disposition:':<24}{disposition}"
         + (f"\n  {'':<24}{explanation}" if explanation else ""),
         "",
-        f"  \u2500\u2500 Hard signals {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
+        f"  \u2500\u2500 Hard signals (gate: syntax+pkg) {'(new only)' if is_diff else ''}\u2500".rstrip("\u2500") + "\u2500" * 12,
         f"  {'Syntax errors:':<24}{hard.get('syntax_errors', 0)}",
         f"  {'Duplicate blocks:':<24}{hard.get('duplicate_blocks', 0)}",
         f"  {'Package risks:':<24}{hard.get('package_risks', 0)}{pkg_annot}",
@@ -1739,8 +1739,9 @@ def main(argv=None):
                         "'triage' (the review-priority panel only), or 'summary' (human-readable terminal output)")
     p.add_argument("--fail-on", choices=["none", "hard", "supply-chain"], default="none",
                    help="exit non-zero when signals are present: 'none' (default, always exit 0), "
-                        "'hard' (exit 1 if any hard signal is found), or 'supply-chain' (exit 1 if "
-                        "any package risk is found). For gating CI.")
+                        "'hard' (exit 1 on syntax_errors or package_risks only; duplicates/stubs/cycles "
+                        "are still reported but do not fail), or 'supply-chain' (exit 1 if any package "
+                        "risk is found). For gating CI.")
     p.add_argument("--baseline", default=None, metavar="REPORT_JSON",
                    help="path to a previous JSON report; only new findings (absent from the baseline) "
                         "are reported. Turns one-shot scans into a CI habit: fail on added debt, not "
@@ -1812,10 +1813,20 @@ def main(argv=None):
             pass  # non-file stdout (tests, embedding); nothing to redirect
 
     # Optional CI gates.
+    # --fail-on hard aligns with triage hard axes (Integrity + Supply chain only):
+    # syntax_errors and package_risks. Duplicates, stubs, and circular imports stay
+    # in the summary "hard_signals" bucket for visibility but do not fail the build —
+    # triage treats them as observations (API-surface clones are not defects).
     if args.fail_on == "hard":
-        hard_total = sum(report["summary"]["hard_signals"].values())
-        if hard_total > 0:
-            print(f"FAIL: {hard_total} hard signal(s) found (--fail-on hard)", file=sys.stderr)
+        hard = report["summary"]["hard_signals"]
+        gate_total = int(hard.get("syntax_errors", 0)) + int(hard.get("package_risks", 0))
+        if gate_total > 0:
+            print(
+                f"FAIL: {gate_total} gateable hard signal(s) found "
+                f"(syntax_errors={hard.get('syntax_errors', 0)}, "
+                f"package_risks={hard.get('package_risks', 0)}; --fail-on hard)",
+                file=sys.stderr,
+            )
             return 1
     elif args.fail_on == "supply-chain":
         pkg_risks = report["summary"]["hard_signals"].get("package_risks", 0)
