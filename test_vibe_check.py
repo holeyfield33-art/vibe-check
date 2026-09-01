@@ -269,7 +269,7 @@ class TestReadmeHypeIgnoresCode(unittest.TestCase):
         self.assertEqual(self._hype(md), 1)
 
 class TestFailOnGate(unittest.TestCase):
-    """--fail-on hard returns exit 1 when hard signals exist, 0 otherwise.
+    """--fail-on hard gates syntax/package risk only.
     Default (no flag) must always return 0 so existing usage never breaks."""
 
     def _clean_repo(self, d):
@@ -282,6 +282,23 @@ class TestFailOnGate(unittest.TestCase):
             f.write("requets==2.0.0\n")
         with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as f:
             f.write("import requets\nx = 1\n")
+
+    def _dup_only_repo(self, d):
+        body = (
+            "def save_item(store, key, value):\n"
+            "    if key is None:\n"
+            "        return False\n"
+            "    store[key] = value\n"
+            "    return True\n\n"
+            "def load_item(store, key, default=None):\n"
+            "    if key in store:\n"
+            "        return store[key]\n"
+            "    return default\n"
+        )
+        with open(os.path.join(d, "cache_a.py"), "w", encoding="utf-8") as f:
+            f.write(body)
+        with open(os.path.join(d, "cache_b.py"), "w", encoding="utf-8") as f:
+            f.write(body)
 
     def test_clean_repo_fail_on_hard_exits_zero(self):
         with tempfile.TemporaryDirectory() as d:
@@ -297,6 +314,26 @@ class TestFailOnGate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._dirty_repo(d)
             self.assertEqual(vc.main([d]), 0)
+
+    def test_duplicates_alone_do_not_fail_hard(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._dup_only_repo(d)
+            out = os.path.join(d, "report.json")
+            rc = vc.main([d, "--out", out, "--fail-on", "hard"])
+            with open(out, "r", encoding="utf-8") as f:
+                report = json.load(f)
+            hard = report["summary"]["hard_signals"]
+            self.assertGreaterEqual(hard["duplicate_blocks"], 1)
+            self.assertEqual(hard["syntax_errors"], 0)
+            self.assertEqual(hard["package_risks"], 0)
+            self.assertEqual(report["triage"]["disposition"], "FAST_TRACK")
+            self.assertEqual(rc, 0)
+
+    def test_syntax_error_fails_hard(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "broken.py"), "w", encoding="utf-8") as f:
+                f.write("def broken(\n")
+            self.assertEqual(vc.main([d, "--fail-on", "hard"]), 1)
 
 class TestTriagePanel(unittest.TestCase):
     """Floor-gate triage: hard axes are absolute, friction is per-KLOC, disposition
