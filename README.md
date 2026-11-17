@@ -4,8 +4,6 @@
 
 # vibe-check
 
-[![CI](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml/badge.svg)](https://github.com/holeyfield33-art/vibe-check/actions/workflows/vibe-check.yml)
-
 A zero-dependency code scanner that surfaces review signals in any repository.
 Point it at any repo, get one JSON report. No install, no API keys,
 no network, just Python stdlib.
